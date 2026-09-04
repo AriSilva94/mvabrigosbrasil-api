@@ -6,7 +6,12 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['eslint.config.mjs'],
+    // `src/generated/prisma` is emitted by `prisma generate` and is gitignored.
+    // Linting it is meaningless (we do not own the formatting) and it broke CI:
+    // locally the old `eslint --fix` had silently reformatted the generated files,
+    // while a fresh `prisma generate` on the runner emits them with a leading
+    // newline that `prettier/prettier` rejects.
+    ignores: ['eslint.config.mjs', 'src/generated/**'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
