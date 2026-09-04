@@ -1,0 +1,26 @@
+[
+  {
+    "format": "gotrue",
+    "hash": "$2b$10$yIyV7NhJ.V8yUFZ2xio3NuHt9aPDZi//beedgezYi/7XjsByTtLgS",
+    "password": "TESTE_SENHA_2025",
+    "synthetic": true
+  },
+  {
+    "format": "wp",
+    "hash": "$wp$2y$10$q.w2c3Lw4CCG9vy6pSx1aOsWocjd123qmF.vu2Sj0QsY/OHWnf/La",
+    "password": "TESTE_SENHA_2025",
+    "synthetic": true
+  },
+  {
+    "format": "phpass",
+    "hash": "$P$Be3nMqFoFuQIS2lwDJ1hNKhit1p5nl1",
+    "password": "TESTE_SENHA_2025",
+    "synthetic": true
+  },
+  {
+    "format": "md5",
+    "hash": "2189491d60e1b54a946529d8150cc3dc",
+    "password": "TESTE_SENHA_2025",
+    "synthetic": true
+  }
+]
