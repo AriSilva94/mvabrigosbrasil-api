@@ -1,0 +1,10 @@
+services:
+  mirror:
+    image: postgres:16-alpine
+    container_name: mv-mirror
+    environment:
+      POSTGRES_USER: mirror
+      POSTGRES_PASSWORD: mirror
+      POSTGRES_DB: supabase_mirror
+    ports:
+      - '5434:5432'
