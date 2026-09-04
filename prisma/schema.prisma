@@ -29,6 +29,12 @@ enum UserOrigin {
   admin_created
 }
 
+enum ShelterVolunteerStatus {
+  pending
+  approved
+  rejected
+}
+
 // ---------- Identidade ----------
 // Ex-`profiles` + campos que viviam em auth.users / user_metadata.
 model User {
@@ -56,42 +62,44 @@ model User {
 
   @@index([role])
   @@index([creatorProfileId])
+  @@index([origin]) // idx_profiles_origin em produção
   @@map("users")
 }
 
 // ---------- Domínio ----------
 model Shelter {
-  id                 String   @id @default(uuid()) @db.Uuid
-  wpPostId           Int?     @unique @map("wp_post_id")
-  profileId          String?  @map("profile_id") @db.Uuid
-  shelterType        String   @map("shelter_type") // public | private | mixed | temporary
+  id                 String    @id @default(uuid()) @db.Uuid
+  wpPostId           Int?      @unique @map("wp_post_id")
+  wpPostAuthor       Int?      @map("wp_post_author") // vínculo legado abrigo↔autor WP (304/337 preenchidas)
+  profileId          String?   @map("profile_id") @db.Uuid
+  shelterType        String    @map("shelter_type") // public | private | mixed | temporary
   cnpj               String?
   cpf                String?
   name               String
-  cep                String
+  cep                String? // produção é nullable; 228/337 nulas (mesmo padrão de district)
   street             String
-  number             String? // ⚠️ confirmar tipo no dump
-  district           String
+  number             Int? // produção é integer; 230/337 nulas
+  district           String? // produção é nullable; 228/337 nulas
   state              String
   city               String
   website            String?
-  foundationDate     String   @map("foundation_date")
+  foundationDate     DateTime? @map("foundation_date") @db.Date // produção é date, anulável (4 linhas nulas)
   species            String
-  additionalSpecies  Json     @default("[]") @map("additional_species") // ⚠️ confirmar jsonb vs text
-  temporaryAgreement Boolean? @map("temporary_agreement") // ⚠️ confirmar (código aceita string)
-  referralSource     String?  @map("referral_source")
-  initialDogs        Int      @default(0) @map("initial_dogs")
-  initialCats        Int      @default(0) @map("initial_cats")
-  initialDogsLt      Int?     @map("initial_dogs_lt")
-  initialCatsLt      Int?     @map("initial_cats_lt")
-  authorizedName     String   @map("authorized_name")
-  authorizedRole     String   @map("authorized_role")
-  authorizedEmail    String   @map("authorized_email")
-  authorizedPhone    String   @map("authorized_phone")
-  active             Boolean  @default(true)
-  acceptTerms        Boolean  @default(false) @map("accept_terms")
-  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  additionalSpecies  Json?     @map("additional_species") // 245/337 nulas; forma inconsistente (array ou string) em produção — normalização é decisão da camada de aplicação
+  temporaryAgreement Boolean?  @map("temporary_agreement") // ⚠️ confirmar (código aceita string)
+  referralSource     String?   @map("referral_source")
+  initialDogs        Int?      @map("initial_dogs") // produção é anulável, sem default
+  initialCats        Int?      @map("initial_cats") // produção é anulável, sem default
+  initialDogsLt      Int?      @map("initial_dogs_lt")
+  initialCatsLt      Int?      @map("initial_cats_lt")
+  authorizedName     String    @map("authorized_name")
+  authorizedRole     String    @map("authorized_role")
+  authorizedEmail    String    @map("authorized_email")
+  authorizedPhone    String    @map("authorized_phone")
+  active             Boolean   @default(true)
+  acceptTerms        Boolean   @default(false) @map("accept_terms")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   profile           User?              @relation(fields: [profileId], references: [id], onDelete: SetNull)
   dynamics          ShelterDynamics[]
@@ -103,6 +111,7 @@ model Shelter {
   @@index([state, city])
   @@index([active])
   @@index([species])
+  @@index([wpPostAuthor])
   @@map("shelters")
 }
 
@@ -145,6 +154,7 @@ model Vacancy {
   id                   String   @id @default(uuid()) @db.Uuid
   wpPostId             Int?     @unique @map("wp_post_id")
   shelterId            String?  @map("shelter_id") @db.Uuid
+  shelterNameRaw       String?  @map("shelter_name_raw")
   title                String
   slug                 String?  @unique
   description          String?
@@ -156,13 +166,14 @@ model Vacancy {
   tipoDemanda          String?  @map("tipo_demanda")
   areaAtuacao          String?  @map("area_atuacao")
   quantidade           String?
+  inscritos            Int?
   isPublished          Boolean? @map("is_published")
   habilidadesEFuncoes  String?  @map("habilidades_e_funcoes")
   perfilDosVoluntarios String?  @map("perfil_dos_voluntarios")
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt            DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  shelter      Shelter?             @relation(fields: [shelterId], references: [id], onDelete: Cascade)
+  shelter      Shelter?             @relation(fields: [shelterId], references: [id], onDelete: SetNull)
   applications VacancyApplication[]
 
   @@index([shelterId])
@@ -223,18 +234,21 @@ model ShelterDynamics {
 }
 
 // Existe no DDL, sem uso no código. Mantida para não perder dados.
+// PK composta (shelter_id, volunteer_id) — forma real de produção; ver enum
+// ShelterVolunteerStatus e o gatilho de updated_at (acrescentado à mão na migração).
 model ShelterVolunteer {
-  id          String    @id @default(uuid()) @db.Uuid
-  shelterId   String    @map("shelter_id") @db.Uuid
-  volunteerId String    @map("volunteer_id") @db.Uuid
-  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
-  endedAt     DateTime? @map("ended_at") @db.Timestamptz
-  status      String    @default("active")
+  shelterId   String                  @map("shelter_id") @db.Uuid
+  volunteerId String                  @map("volunteer_id") @db.Uuid
+  role        String?
+  status      ShelterVolunteerStatus? // produção é nullable, sem default enforçado
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime                @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   shelter   Shelter   @relation(fields: [shelterId], references: [id], onDelete: Cascade)
   volunteer Volunteer @relation(fields: [volunteerId], references: [id], onDelete: Cascade)
 
-  @@unique([shelterId, volunteerId])
+  @@id([shelterId, volunteerId])
+  @@index([volunteerId]) // idx_shelter_volunteers_volunteer em produção
   @@map("shelter_volunteers")
 }
 
@@ -264,17 +278,18 @@ model ShelterHistory {
 model TeamMembership {
   id              String    @id @default(uuid()) @db.Uuid
   ownerProfileId  String?   @map("owner_profile_id") @db.Uuid
-  ownerWpUserId   Int?      @map("owner_wp_user_id")
+  ownerWpUserId   BigInt?   @map("owner_wp_user_id") // produção é bigint
   memberProfileId String?   @map("member_profile_id") @db.Uuid
-  memberWpUserId  Int?      @map("member_wp_user_id")
+  memberWpUserId  BigInt?   @map("member_wp_user_id") // produção é bigint
   memberEmail     String?   @map("member_email")
-  abrigoPostId    Int?      @map("abrigo_post_id")
-  role            String? // owner | manager | member
-  status          String? // active | pending_owner | ...
+  abrigoPostId    BigInt?   @map("abrigo_post_id") // produção é bigint
+  role            String    @default("member") // owner | manager | member — CHECK na migração
+  status          String    @default("pending_member") // pending_owner | pending_member | active — CHECK na migração
   createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   @@unique([ownerWpUserId, memberWpUserId, abrigoPostId]) // onConflict do script de migração ⚠️ confirmar
+  @@unique([ownerWpUserId, memberWpUserId], map: "team_memberships_owner_member_uniq") // unique mais estrito, existe em produção
   @@index([memberWpUserId, role, status])
   @@index([abrigoPostId])
   @@map("team_memberships")
@@ -283,8 +298,8 @@ model TeamMembership {
 // ---------- Legado WordPress (somente leitura pela API) ----------
 model WpUserLegacy {
   id          BigInt    @id
-  userLogin   String    @unique @map("user_login") @db.VarChar(60)
-  userEmail   String    @unique @map("user_email") @db.VarChar(100)
+  userLogin   String    @map("user_login") @db.VarChar(60) // sem unique em produção
+  userEmail   String    @map("user_email") @db.VarChar(100) // sem unique em produção; índice funcional lower(user_email) na migração
   userPass    String    @map("user_pass") @db.VarChar(255)
   displayName String?   @map("display_name") @db.VarChar(250)
   migrated    Boolean?  @default(false)
@@ -353,5 +368,29 @@ model WpPostmetaRaw {
   @@map("wp_postmeta_raw")
 }
 
-// ⚠️ wp_usermeta_raw: existe no Supabase (EXECUTAR-MIGRACAO.md), DDL não versionado.
-// Gerar com `prisma db pull` contra o dump confirmado ou omitir se não for necessário à API.
+model WpUsermetaRaw {
+  umetaId   BigInt  @id @default(autoincrement()) @map("umeta_id")
+  userId    BigInt  @map("user_id")
+  metaKey   String? @map("meta_key") @db.VarChar(255)
+  metaValue String? @map("meta_value")
+
+  @@index([userId])
+  @@index([metaKey])
+  @@index([userId, metaKey])
+  @@map("wp_usermeta_raw")
+}
+
+// Fila de exclusão suave (soft-delete). Populada/lida pelo fluxo administrativo; 4 linhas hoje.
+model DeletionFlag {
+  id        String    @id @default(uuid()) @db.Uuid
+  tableName String    @map("table_name") @db.VarChar
+  recordId  String    @map("record_id")
+  flaggedAt DateTime? @map("flagged_at") @db.Timestamptz
+  flaggedBy String?   @map("flagged_by") @db.VarChar
+  reason    String?
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  status    String    @default("pending") @map("status") @db.VarChar // pending | deleted — CHECK na migração
+
+  @@index([status, tableName], map: "idx_deletion_flags_status") // compound em produção; unique parcial (table_name, record_id) WHERE status='pending' acrescentado à mão na migração
+  @@map("deletion_flags")
+}
