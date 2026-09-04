@@ -141,24 +141,6 @@ describe('buildSequenceResetSql', () => {
   });
 });
 
-describe('shelters transformRow (negative initial_dogs/initial_cats sanitizer)', () => {
-  const sheltersConfig = TABLES.find((t) => t.table === 'shelters')!;
-
-  it('nulls out a negative initial_dogs (the known bad "Aliança do Bem" row)', () => {
-    const row = { id: 'x', initial_dogs: -50, initial_cats: 0 };
-    expect(sheltersConfig.transformRow!(row)).toMatchObject({
-      initial_dogs: null,
-      initial_cats: 0,
-    });
-  });
-
-  it('leaves non-negative and null values untouched', () => {
-    expect(
-      sheltersConfig.transformRow!({ initial_dogs: 5, initial_cats: null }),
-    ).toMatchObject({ initial_dogs: 5, initial_cats: null });
-  });
-});
-
 describe('TABLES (dependency order)', () => {
   it('lists every remaining table exactly once, in the brief-mandated order', () => {
     expect(TABLES.map((t) => t.table)).toEqual([
@@ -199,5 +181,12 @@ describe('TABLES (dependency order)', () => {
       true,
     );
     expect(TABLES.some((t) => t.table === SHELTER_TRIGGER_SPAN.to)).toBe(true);
+  });
+
+  it('shelters copies initial_dogs/initial_cats verbatim — no sanitizing transform exists on TableImportConfig, and production has no CHECK on either column', () => {
+    const shelters = TABLES.find((t) => t.table === 'shelters')!;
+    expect(shelters.columns).toEqual(
+      expect.arrayContaining(['initial_dogs', 'initial_cats']),
+    );
   });
 });

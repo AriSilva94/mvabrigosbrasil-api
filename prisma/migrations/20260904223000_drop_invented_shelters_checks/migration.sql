@@ -1,0 +1,22 @@
+-- Fidelity-to-production fix (Task 4 review, fix round 1).
+--
+-- `shelters_initial_dogs_check` / `shelters_initial_cats_check`
+-- (CHECK (initial_dogs >= 0) / CHECK (initial_cats >= 0)) were added in
+-- 20260904141646_init from the frontend's old migration DDL
+-- (docs/nestjs-migration/04-schema-prisma-e-dados.md §2, "CHECKs do DDL
+-- original"). They do NOT exist in real Supabase production:
+--
+--   SELECT conname FROM pg_constraint
+--   WHERE conrelid = 'public.shelters'::regclass AND contype = 'c';
+--   -- returns nothing
+--
+-- Production has exactly one shelter (wp_post_id 2160, "Aliança do Bem")
+-- with a negative initial_dogs (-50). That is a real value production
+-- actually stores, not a data-entry artifact to be sanitized away — nulling
+-- it during import (as fix round 0 did) would fabricate data the source of
+-- truth never fabricated. The correct fix is to drop the invented
+-- constraint and import the value verbatim, the same class of correction
+-- already applied to `cep`/`district`/`foundation_date` in the prior
+-- migration.
+ALTER TABLE "shelters" DROP CONSTRAINT IF EXISTS "shelters_initial_dogs_check";
+ALTER TABLE "shelters" DROP CONSTRAINT IF EXISTS "shelters_initial_cats_check";

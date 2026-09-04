@@ -34,17 +34,6 @@ export interface TableImportConfig {
   jsonColumns?: string[];
   /** Rows fetched (and inserted) per round-trip. Defaults to 500 per the brief. */
   batchSize?: number;
-  /**
-   * Optional per-row sanitizer applied after the mirror row is read and
-   * before it is inserted. Used only for `shelters`, to null out the one
-   * production row (`wp_post_id` 2160, "Aliança do Bem") whose
-   * `initial_dogs` is -50 - clearly bad legacy data that violates the
-   * target's `shelters_initial_dogs_check`/`shelters_initial_cats_check`
-   * (neither existed on the mirror). Nulling rather than clamping to 0
-   * avoids asserting a specific fabricated count for a value nobody can
-   * recover.
-   */
-  transformRow?: (row: Record<string, unknown>) => Record<string, unknown>;
 }
 
 export const DEFAULT_BATCH_SIZE = 500;
@@ -222,17 +211,6 @@ export const TABLES: TableImportConfig[] = [
     table: 'shelters',
     primaryKey: ['id'],
     jsonColumns: ['additional_species'],
-    transformRow: (row) => ({
-      ...row,
-      initial_dogs:
-        typeof row.initial_dogs === 'number' && row.initial_dogs < 0
-          ? null
-          : row.initial_dogs,
-      initial_cats:
-        typeof row.initial_cats === 'number' && row.initial_cats < 0
-          ? null
-          : row.initial_cats,
-    }),
     columns: [
       'id',
       'wp_post_id',
@@ -482,15 +460,8 @@ export async function copyTable(
       ? [...(cursor as unknown[]), batchSize]
       : [batchSize];
 
-    const { rows: rawRows } = await mirror.query<Record<string, unknown>>(
-      sql,
-      params,
-    );
-    if (rawRows.length === 0) break;
-
-    const rows = config.transformRow
-      ? rawRows.map(config.transformRow)
-      : rawRows;
+    const { rows } = await mirror.query<Record<string, unknown>>(sql, params);
+    if (rows.length === 0) break;
 
     read += rows.length;
 
