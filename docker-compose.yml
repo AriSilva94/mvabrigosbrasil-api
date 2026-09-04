@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mv
+      POSTGRES_PASSWORD: mv
+      POSTGRES_DB: mvabrigos
+    # Host 5433 (not 5432): this machine already runs another project's Postgres on 5432.
+    # Inside the compose network the service is still reachable at postgres:5432.
+    ports: ["5433:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "mv",
+        "--maxmemory",
+        "128mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    # Host 6380 (not 6379): this machine already runs another project's Redis on 6379.
+    # Inside the compose network the service is still reachable at redis:6379.
+    ports: ["6380:6379"]
+
+  api:
+    build: .
+    depends_on: [postgres, redis]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
+      REDIS_URL: redis://:mv@redis:6379/0
+      COOKIE_SECURE: "false"
+    ports: ["3001:3001"]
+
+volumes:
+  pgdata: {}
