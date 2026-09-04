@@ -179,7 +179,10 @@ function toParamRow(u: UserInsert): unknown[] {
   ];
 }
 
-async function insertBatch(target: Client, batch: UserInsert[]): Promise<number> {
+async function insertBatch(
+  target: Client,
+  batch: UserInsert[],
+): Promise<number> {
   if (batch.length === 0) return 0;
 
   const columnCount = INSERT_COLUMNS.length;

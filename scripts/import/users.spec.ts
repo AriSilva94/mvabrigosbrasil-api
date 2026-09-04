@@ -1,4 +1,8 @@
-import { mapAuthUserToUser, normalizeRegisterType, type AuthUserRow } from './users';
+import {
+  mapAuthUserToUser,
+  normalizeRegisterType,
+  type AuthUserRow,
+} from './users';
 
 /**
  * All rows below are SYNTHETIC — shaped like real `auth.users` LEFT JOIN
@@ -122,7 +126,9 @@ describe('mapAuthUserToUser', () => {
   });
 
   it('confirmed email: emailVerified is true', () => {
-    const row = baseRow({ email_confirmed_at: new Date('2024-01-01T00:00:00Z') });
+    const row = baseRow({
+      email_confirmed_at: new Date('2024-01-01T00:00:00Z'),
+    });
 
     expect(mapAuthUserToUser(row).emailVerified).toBe(true);
   });
@@ -148,7 +154,12 @@ describe('mapAuthUserToUser', () => {
   });
 
   it('falls back to supabase_native origin when the profile row is missing (no LEFT JOIN match)', () => {
-    const row = baseRow({ full_name: null, phone: null, origin: null, is_team_only: null });
+    const row = baseRow({
+      full_name: null,
+      phone: null,
+      origin: null,
+      is_team_only: null,
+    });
 
     expect(mapAuthUserToUser(row).origin).toBe('supabase_native');
   });
