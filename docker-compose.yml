@@ -26,9 +26,29 @@ services:
     # Inside the compose network the service is still reachable at redis:6379.
     ports: ["6380:6379"]
 
+  # Runs `prisma migrate deploy` once against `postgres`, then exits. The `api` service
+  # below waits for this to exit 0 before starting (`condition:
+  # service_completed_successfully`) so the app never boots against un-migrated schema.
+  migrator:
+    build:
+      context: .
+      target: migrator
+    depends_on:
+      postgres:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
+    restart: "no"
+
   api:
     build: .
-    depends_on: [postgres, redis]
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      migrator:
+        condition: service_completed_successfully
     env_file: .env
     environment:
       DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public

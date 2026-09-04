@@ -30,6 +30,25 @@ COPY . .
 RUN npx prisma generate
 RUN npm run build
 
+# `migrator`: a separate, explicitly-named target whose only job is `prisma migrate
+# deploy`. The `runner` image below deliberately ships neither the Prisma CLI nor
+# `prisma/` (see the comment above `COPY --from=build /app/dist ./dist`), so there is no
+# way to apply migrations against it — this stage is that missing migration path. It is
+# NOT the default target: `docker build .` still resolves to the last stage (`runner`)
+# below, unchanged. Build this one explicitly with `--target migrator`.
+#
+# Based on `deps`, not `build`: `build` bakes the dummy `DATABASE_URL` ARG in as an ENV
+# layer (needed only so `prisma generate` doesn't crash at load time), and that ENV would
+# leak into any image built FROM it as a default env var. `deps` has the full
+# `npm ci` install (Prisma CLI included, nothing omitted) but no DATABASE_URL of any kind
+# baked in — this stage reads DATABASE_URL from the environment at container run time,
+# like every other service in docker-compose.yml, with no default value at all.
+FROM deps AS migrator
+WORKDIR /app
+COPY prisma ./prisma
+COPY prisma.config.ts ./
+CMD ["npx", "prisma", "migrate", "deploy"]
+
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -51,10 +70,10 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 # prisma/schema.prisma or prisma.config.ts, so neither is copied here. There is no
 # node_modules/.prisma or node_modules/@prisma/client to copy separately either —
 # @prisma/client / @prisma/adapter-pg ship as regular npm dependencies already restored by
-# `npm ci --omit=dev --omit=optional` above. (prisma/migrations still lives in the repo/build
-# stage for `prisma migrate deploy`, which this image does not run — see
-# .superpowers/sdd/2026-09-04-nestjs-backend-foundation-v2/task-9-report.md for how a
-# Dokploy pre-deploy step should apply migrations.)
+# `npm ci --omit=dev --omit=optional` above. This image never runs `prisma migrate
+# deploy` — that is the `migrator` target's job (see above), built and run separately
+# (docker-compose.yml wires it to run once, before `api`, via `depends_on:
+# service_completed_successfully`).
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 3001
