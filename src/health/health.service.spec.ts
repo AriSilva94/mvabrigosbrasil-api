@@ -27,4 +27,13 @@ describe('HealthService', () => {
       await new HealthService(prismaUp as never, redisDown as never).check(),
     ).toEqual({ status: 'degraded', db: 'up', redis: 'down' });
   });
+
+  it('reports down (not hung) when a probe never settles', async () => {
+    const redisHung = { ping: jest.fn(() => new Promise(() => {})) };
+    const result = await new HealthService(
+      prismaUp as never,
+      redisHung as never,
+    ).check();
+    expect(result).toEqual({ status: 'degraded', db: 'up', redis: 'down' });
+  }, 5000);
 });

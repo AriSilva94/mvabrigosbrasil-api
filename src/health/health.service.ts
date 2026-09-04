@@ -8,6 +8,26 @@ export type HealthStatus = {
   redis: 'up' | 'down';
 };
 
+const PROBE_TIMEOUT_MS = 2000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('probe timed out'));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
 @Injectable()
 export class HealthService {
   constructor(
@@ -16,11 +36,13 @@ export class HealthService {
   ) {}
 
   async check(): Promise<HealthStatus> {
-    const db = await this.prisma.$queryRaw`SELECT 1`
+    const db = await withTimeout(
+      this.prisma.$queryRaw`SELECT 1`.then(() => undefined),
+      PROBE_TIMEOUT_MS,
+    )
       .then(() => 'up' as const)
       .catch(() => 'down' as const);
-    const redis = await this.redis
-      .ping()
+    const redis = await withTimeout(this.redis.ping(), PROBE_TIMEOUT_MS)
       .then(() => 'up' as const)
       .catch(() => 'down' as const);
     return {

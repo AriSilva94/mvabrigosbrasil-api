@@ -18,6 +18,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const payload = exception.getResponse();
+
+      if (status >= 500) {
+        this.logger.error(exception.stack ?? exception.message);
+      }
+
       if (
         typeof payload === 'object' &&
         payload !== null &&
@@ -25,14 +30,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
         typeof payload.error === 'string' &&
         !('statusCode' in payload)
       ) {
-        res.status(status).json(payload);
+        const body: { error: string; details?: unknown } = {
+          error: payload.error,
+        };
+        if ('details' in payload) {
+          body.details = (payload as { details?: unknown }).details;
+        }
+        res.status(status).json(body);
         return;
       }
       const message =
         typeof payload === 'string'
           ? payload
           : ((payload as { message?: string | string[] }).message ??
-            HttpStatus[status]);
+            HttpStatus[status] ??
+            'Erro interno do servidor');
       res
         .status(status)
         .json({ error: Array.isArray(message) ? message[0] : message });

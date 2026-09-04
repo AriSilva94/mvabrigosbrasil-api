@@ -45,7 +45,7 @@ export async function verifyWordpressPassword(
       const compatHash = normalizedHash.startsWith('$2y$')
         ? normalizedHash.replace('$2y$', '$2a$')
         : normalizedHash;
-      return bcrypt.compare(
+      return await bcrypt.compare(
         prepareWordpressPassword(trimmedPassword),
         compatHash,
       );

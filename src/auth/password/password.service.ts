@@ -40,7 +40,7 @@ export class PasswordService {
       return { valid, needsRehash: false };
     }
 
-    const valid = await verifyWordpressPassword(pwd, hash);
+    const valid = await verifyWordpressPassword(pwd, hash).catch(() => false);
     return { valid, needsRehash: valid };
   }
 }
