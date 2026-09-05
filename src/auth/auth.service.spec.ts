@@ -4,7 +4,7 @@ import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
 import type { LegacyMigrationService } from './legacy-migration.service';
 import type { SessionService } from '../redis/session.service';
-import type { TokenService } from './jwt/token.service';
+import type { TokenService, Claims } from './jwt/token.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { User, WpUserLegacy } from '../generated/prisma/client';
 
@@ -241,6 +241,316 @@ describe('AuthService.login', () => {
     ).rejects.toMatchObject({
       status: 404,
       response: { error: 'Usuário não encontrado' },
+    });
+  });
+});
+
+function makeClaims(overrides: Partial<Claims> = {}): Claims {
+  return {
+    sub: 'actor-1',
+    email: 'actor@example.com',
+    role: 'admin',
+    isTeamOnly: false,
+    teamDisabled: false,
+    creatorProfileId: null,
+    sid: 'sid-actor',
+    ...overrides,
+  };
+}
+
+describe('AuthService.register', () => {
+  let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
+  let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
+  let sessionService: jest.Mocked<Pick<SessionService, 'create'>>;
+  let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
+  let prisma: { user: { findFirst: jest.Mock; create: jest.Mock } };
+  let service: AuthService;
+
+  beforeEach(() => {
+    usersService = { findByEmail: jest.fn().mockResolvedValue(null) };
+    passwordService = { hash: jest.fn().mockResolvedValue('hashed-pw') };
+    sessionService = {
+      create: jest.fn().mockResolvedValue({ sid: 'sid-1', rt: 'rt-1' }),
+    };
+    tokenService = { sign: jest.fn().mockResolvedValue('signed-jwt') };
+    prisma = {
+      user: {
+        findFirst: jest.fn(),
+        create: jest.fn().mockResolvedValue({ id: 'new-user-1' }),
+      },
+    };
+
+    service = new AuthService(
+      usersService as unknown as UsersService,
+      passwordService as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      sessionService as unknown as SessionService,
+      tokenService as unknown as TokenService,
+      prisma as unknown as PrismaService,
+    );
+  });
+
+  it('400 when email is missing', async () => {
+    await expect(
+      service.register({ email: '', password: 'secretpw' }, null),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'E-mail e senha são obrigatórios.' },
+    });
+  });
+
+  it('400 when password is missing', async () => {
+    await expect(
+      service.register({ email: 'a@b.com', password: '  ' }, null),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'E-mail e senha são obrigatórios.' },
+    });
+  });
+
+  it('400 when password is shorter than 8 characters', async () => {
+    await expect(
+      service.register({ email: 'a@b.com', password: '1234567' }, null),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter pelo menos 8 caracteres.' },
+    });
+  });
+
+  it('409 when e-mail already exists (case-insensitive)', async () => {
+    usersService.findByEmail.mockResolvedValue({
+      id: 'existing',
+    } as unknown as User);
+
+    await expect(
+      service.register(
+        { email: 'JOAO@Example.com', password: 'secretpw' },
+        null,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { error: 'E-mail já cadastrado.' },
+    });
+    expect(usersService.findByEmail).toHaveBeenCalledWith('joao@example.com');
+  });
+
+  it('401 when teamOnly=true and no session', async () => {
+    await expect(
+      service.register(
+        { email: 'a@b.com', password: 'secretpw', teamOnly: true },
+        null,
+      ),
+    ).rejects.toMatchObject({
+      status: 401,
+      response: {
+        error: 'É necessário estar logado para criar acessos da equipe.',
+      },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('teamOnly=true with session: creatorProfileId=actor, origin=admin_created, isTeamOnly=true, no cookies emitted', async () => {
+    const actor = makeClaims({ sub: 'actor-42' });
+
+    const result = await service.register(
+      { email: 'novo@b.com', password: 'secretpw', teamOnly: true },
+      actor,
+    );
+
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: 'novo@b.com',
+        creatorProfileId: 'actor-42',
+        origin: 'admin_created',
+        isTeamOnly: true,
+        emailVerified: true,
+      }) as unknown,
+    });
+    expect(result.teamOnly).toBe(true);
+    expect(result.userId).toBe('new-user-1');
+    expect(result.at).toBeUndefined();
+    expect(result.rt).toBeUndefined();
+    expect(sessionService.create).not.toHaveBeenCalled();
+    expect(tokenService.sign).not.toHaveBeenCalled();
+  });
+
+  it('normal register (no teamOnly): origin=supabase_native, creatorProfileId=null, emits session', async () => {
+    const result = await service.register(
+      { email: 'Novo@B.com', password: 'secretpw', registerType: 'voluntario' },
+      null,
+    );
+
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: 'novo@b.com',
+        creatorProfileId: null,
+        origin: 'supabase_native',
+        isTeamOnly: false,
+        role: 'voluntario',
+        emailVerified: true,
+        passwordHash: 'hashed-pw',
+      }) as unknown,
+    });
+    expect(result.teamOnly).toBe(false);
+    expect(result.userId).toBe('new-user-1');
+    expect(result.at).toBe('signed-jwt');
+    expect(result.rt).toBe('rt-1');
+    expect(result.sid).toBe('sid-1');
+    expect(sessionService.create).toHaveBeenCalledWith('new-user-1');
+  });
+
+  it('invalid/absent registerType falls back to abrigo', async () => {
+    await service.register(
+      { email: 'x@y.com', password: 'secretpw', registerType: 'nonsense' },
+      null,
+    );
+
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ role: 'abrigo' }) as unknown,
+    });
+  });
+
+  it('lowercases email before storing/checking', async () => {
+    await service.register(
+      { email: '  MAIUSCULO@Example.com  ', password: 'secretpw' },
+      null,
+    );
+
+    expect(usersService.findByEmail).toHaveBeenCalledWith(
+      'maiusculo@example.com',
+    );
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: 'maiusculo@example.com',
+      }) as unknown,
+    });
+  });
+});
+
+describe('AuthService.me', () => {
+  let service: AuthService;
+
+  beforeEach(() => {
+    service = new AuthService(
+      {} as unknown as UsersService,
+      {} as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      {} as unknown as SessionService,
+      {} as unknown as TokenService,
+      {} as unknown as PrismaService,
+    );
+  });
+
+  it('returns user shape from claims', async () => {
+    const claims = makeClaims({
+      sub: 'user-9',
+      email: 'user9@example.com',
+      role: 'voluntario',
+      isTeamOnly: true,
+      teamDisabled: false,
+      creatorProfileId: 'creator-1',
+    });
+
+    await expect(service.me(claims)).resolves.toEqual({
+      user: {
+        id: 'user-9',
+        email: 'user9@example.com',
+        role: 'voluntario',
+        isTeamOnly: true,
+        teamDisabled: false,
+        creatorProfileId: 'creator-1',
+      },
+    });
+  });
+
+  it('401 when no session', async () => {
+    await expect(service.me(null)).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'Não autenticado' },
+    });
+  });
+});
+
+describe('AuthService.postLoginRedirect', () => {
+  let prisma: {
+    shelter: { findFirst: jest.Mock };
+    volunteer: { findFirst: jest.Mock };
+  };
+  let service: AuthService;
+
+  beforeEach(() => {
+    prisma = {
+      shelter: { findFirst: jest.fn().mockResolvedValue(null) },
+      volunteer: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
+    service = new AuthService(
+      {} as unknown as UsersService,
+      {} as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      {} as unknown as SessionService,
+      {} as unknown as TokenService,
+      prisma as unknown as PrismaService,
+    );
+  });
+
+  it('401 when no session', async () => {
+    await expect(service.postLoginRedirect(null)).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'Não autenticado' },
+    });
+  });
+
+  it('admin -> /painel without checking shelter/volunteer', async () => {
+    const claims = makeClaims({ role: 'admin' });
+
+    await expect(service.postLoginRedirect(claims)).resolves.toEqual({
+      hasShelter: false,
+      hasVolunteer: false,
+      hasProfile: false,
+      redirectTo: '/painel',
+    });
+    expect(prisma.shelter.findFirst).not.toHaveBeenCalled();
+    expect(prisma.volunteer.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('has shelter -> /painel', async () => {
+    prisma.shelter.findFirst.mockResolvedValue({ id: 'shelter-1' });
+    const claims = makeClaims({ role: 'abrigo', sub: 'user-1' });
+
+    await expect(service.postLoginRedirect(claims)).resolves.toEqual({
+      hasShelter: true,
+      hasVolunteer: false,
+      hasProfile: true,
+      redirectTo: '/painel',
+    });
+    expect(prisma.shelter.findFirst).toHaveBeenCalledWith({
+      where: { profileId: 'user-1' },
+    });
+  });
+
+  it('has volunteer -> /painel', async () => {
+    prisma.volunteer.findFirst.mockResolvedValue({ id: 'vol-1' });
+    const claims = makeClaims({ role: 'voluntario', sub: 'user-2' });
+
+    await expect(service.postLoginRedirect(claims)).resolves.toEqual({
+      hasShelter: false,
+      hasVolunteer: true,
+      hasProfile: true,
+      redirectTo: '/painel',
+    });
+    expect(prisma.volunteer.findFirst).toHaveBeenCalledWith({
+      where: { ownerProfileId: 'user-2' },
+    });
+  });
+
+  it('neither shelter nor volunteer -> /meu-cadastro', async () => {
+    const claims = makeClaims({ role: 'voluntario', sub: 'user-3' });
+
+    await expect(service.postLoginRedirect(claims)).resolves.toEqual({
+      hasShelter: false,
+      hasVolunteer: false,
+      hasProfile: false,
+      redirectTo: '/meu-cadastro',
     });
   });
 });
