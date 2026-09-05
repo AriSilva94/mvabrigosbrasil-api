@@ -45,9 +45,20 @@ export class MailService {
     `.trim();
 
     if (!this.client) {
-      this.logger.log(
-        `RESEND_API_KEY não configurado — link de redefinição de senha para ${email}: ${link}`,
-      );
+      if (process.env.NODE_ENV !== 'production') {
+        // Conveniência de dev/teste: sem RESEND_API_KEY, loga o link (com
+        // token) para permitir seguir o fluxo manualmente. Nunca em produção.
+        this.logger.log(
+          `RESEND_API_KEY não configurado — link de redefinição de senha para ${email}: ${link}`,
+        );
+      } else {
+        // Em produção, uma key ausente é uma falha de configuração — nunca
+        // logar o token em claro. Apenas avisa e segue (forgot-password
+        // nunca deve falhar por causa do envio de e-mail).
+        this.logger.warn(
+          `RESEND_API_KEY não configurado em produção — e-mail de redefinição de senha para ${email} não pôde ser enviado`,
+        );
+      }
       return;
     }
 

@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { MailService } from './mail.service';
 import type { ResendLikeClient } from './mail.service';
 
@@ -40,6 +41,61 @@ describe('MailService.sendPasswordReset', () => {
     await expect(
       service.sendPasswordReset('joao@example.com', link),
     ).resolves.toBeUndefined();
+  });
+
+  describe('without a client (RESEND_API_KEY missing), guarded by NODE_ENV', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const config = {
+      get: (key: string) =>
+        key === 'MAIL_FROM'
+          ? 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>'
+          : undefined,
+    };
+
+    afterEach(() => {
+      process.env.NODE_ENV = originalNodeEnv;
+      jest.restoreAllMocks();
+    });
+
+    it('logs the reset link (with token) in non-production', async () => {
+      process.env.NODE_ENV = 'test';
+      const logSpy = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const service = new MailService(null, config as never);
+      const link = 'http://localhost:3000/redefinir-senha?token=abc123';
+
+      await service.sendPasswordReset('joao@example.com', link);
+
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy.mock.calls[0][0]).toContain(link);
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does NOT log the token in production, only a warning', async () => {
+      process.env.NODE_ENV = 'production';
+      const logSpy = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+      const warnSpy = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const service = new MailService(null, config as never);
+      const link = 'http://localhost:3000/redefinir-senha?token=abc123';
+
+      await expect(
+        service.sendPasswordReset('joao@example.com', link),
+      ).resolves.toBeUndefined();
+
+      expect(logSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const warnArgs = warnSpy.mock.calls[0].join(' ');
+      expect(warnArgs).not.toContain('abc123');
+      expect(warnArgs).not.toContain(link);
+    });
   });
 
   it('does not throw when the Resend client rejects (e.g. invalid key/network error)', async () => {

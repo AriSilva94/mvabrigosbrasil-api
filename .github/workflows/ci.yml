@@ -29,6 +29,8 @@ jobs:
       REDIS_TEST_URL: redis://localhost:6379/15
       AUTH_JWT_SECRET: ci-secret-ci-secret-ci-secret-ci-secret-00
       APP_URL: http://localhost:3000
+      COOKIE_SECURE: 'false'
+      MAIL_FROM: 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>'
 
     steps:
       - uses: actions/checkout@v4
@@ -46,4 +48,5 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run test:import
+      - run: npm run test:e2e
       - run: npm run build
