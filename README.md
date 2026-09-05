@@ -80,7 +80,11 @@ npm run test:e2e  # e2e smoke test (boots AppModule, hits /api/v1/health)
 npm run test:cov  # coverage
 ```
 
-## 6. Docker build targets
+## 6. Data import (Supabase → NestJS)
+
+To import production data from Supabase into the target NestJS database, follow the complete procedure in [`docs/IMPORT.md`](docs/IMPORT.md). The process brings up a disposable Postgres mirror, restores the production dump, applies the target schema, runs the orchestrator to copy data, and verifies integrity across 15 tables and 40+ automated checks. Imports are idempotent (re-runnable), though changes made to Supabase after the 2026-09-04 dump are not synced; a delta step with `ON CONFLICT DO UPDATE` is required for the real production cutover (Phase 2).
+
+## 7. Docker build targets
 
 The `Dockerfile` has two relevant targets (the default `docker build .`
 resolves to `runner`):
