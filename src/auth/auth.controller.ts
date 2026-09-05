@@ -15,6 +15,9 @@ import { AuthService } from './auth.service';
 import type { MeResult, PostLoginRedirectResult } from './auth.service';
 import { loginSchema } from './dto/login.dto';
 import { registerSchema } from './dto/register.dto';
+import { forgotPasswordSchema } from './dto/forgot.dto';
+import { resetPasswordSchema } from './dto/reset.dto';
+import { changePasswordSchema } from './dto/change.dto';
 import { setAuthCookies, clearAuthCookies } from './cookies/cookies';
 import { Public } from './decorators/public';
 import { TokenService, Claims } from './jwt/token.service';
@@ -160,6 +163,58 @@ export class AuthController {
     await this.authService.logout(parsed?.sid ?? null);
     clearAuthCookies(res, this.config);
     return { ok: true };
+  }
+
+  // Doc 03 §10 / doc 05 §3.1. Sempre 200 `{ok:true}` — nunca revela se o
+  // e-mail existe (nem por status, nem por corpo, nem por timing observável
+  // no shape da resposta). Um body malformado (sem `email` string) é tratado
+  // como e-mail vazio, que também resolve `{ok:true}` sem efeitos colaterais.
+  @Public()
+  @Post('forgot-password')
+  @HttpCode(200)
+  async forgotPassword(@Body() body: unknown): Promise<OkResponse> {
+    const parsed = forgotPasswordSchema.safeParse(body);
+    const email = parsed.success ? parsed.data.email : '';
+    return this.authService.forgotPassword(email);
+  }
+
+  // Doc 03 §10 / doc 05 §3.1.
+  @Public()
+  @Post('reset-password')
+  @HttpCode(200)
+  async resetPassword(@Body() body: unknown): Promise<OkResponse> {
+    const parsed = resetPasswordSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+    return this.authService.resetPassword(
+      parsed.data.token,
+      parsed.data.password,
+    );
+  }
+
+  // Doc 03 §10 / doc 05 §3.1. NÃO marcado `@Public()` — exige sessão, lida
+  // do cookie `mv_at` da mesma forma que `me`/`postLoginRedirect` (ver
+  // comentário em `me` acima sobre o `JwtAuthGuard` global ainda não
+  // existir).
+  @Post('change-password')
+  @HttpCode(200)
+  async changePassword(
+    @Body() body: unknown,
+    @Req() req: Request,
+  ): Promise<OkResponse> {
+    const parsed = changePasswordSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException({
+        error: 'Senha atual e nova senha são obrigatórias.',
+      });
+    }
+    const claims = await this.currentClaims(req);
+    return this.authService.changePassword(
+      claims,
+      parsed.data.currentPassword,
+      parsed.data.newPassword,
+    );
   }
 
   private async currentClaims(req: Request): Promise<Claims | null> {

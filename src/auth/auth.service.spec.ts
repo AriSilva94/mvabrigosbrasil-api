@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import type { UsersService } from '../users/users.service';
@@ -6,6 +7,10 @@ import type { LegacyMigrationService } from './legacy-migration.service';
 import type { SessionService } from '../redis/session.service';
 import type { TokenService, Claims } from './jwt/token.service';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { RedisService } from '../redis/redis.service';
+import type { MailService } from '../mail/mail.service';
+import type { ConfigService } from '@nestjs/config';
+import type { Env } from '../config/env.validation';
 import type { User, WpUserLegacy } from '../generated/prisma/client';
 
 function makeUser(overrides: Partial<User> = {}): User {
@@ -88,6 +93,9 @@ describe('AuthService.login', () => {
       sessionService as unknown as SessionService,
       tokenService as unknown as TokenService,
       prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -287,6 +295,9 @@ describe('AuthService.register', () => {
       sessionService as unknown as SessionService,
       tokenService as unknown as TokenService,
       prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -438,6 +449,9 @@ describe('AuthService.me', () => {
       {} as unknown as SessionService,
       {} as unknown as TokenService,
       {} as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -490,6 +504,9 @@ describe('AuthService.postLoginRedirect', () => {
       {} as unknown as SessionService,
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -588,6 +605,9 @@ describe('AuthService.refresh', () => {
       sessionService as unknown as SessionService,
       tokenService as unknown as TokenService,
       prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -660,6 +680,9 @@ describe('AuthService.logout', () => {
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
       {} as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
     );
   });
 
@@ -672,5 +695,270 @@ describe('AuthService.logout', () => {
   it('is a no-op (does not throw) when sid is null', async () => {
     await expect(service.logout(null)).resolves.toBeUndefined();
     expect(sessionService.revoke).not.toHaveBeenCalled();
+  });
+});
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+// Task 10: doc 03 §10 / doc 05 §3.1 — recuperação de senha por e-mail.
+describe('AuthService.forgotPassword', () => {
+  let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
+  let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
+  let redisClient: { set: jest.Mock };
+  let redisService: { client: unknown };
+  let config: { get: jest.Mock };
+  let service: AuthService;
+
+  beforeEach(() => {
+    usersService = { findByEmail: jest.fn() };
+    mailService = {
+      sendPasswordReset: jest.fn().mockResolvedValue(undefined),
+    };
+    redisClient = { set: jest.fn().mockResolvedValue('OK') };
+    redisService = { client: redisClient };
+    config = { get: jest.fn().mockReturnValue('http://localhost:3000') };
+
+    service = new AuthService(
+      usersService as unknown as UsersService,
+      {} as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      {} as unknown as SessionService,
+      {} as unknown as TokenService,
+      {} as unknown as PrismaService,
+      redisService as unknown as RedisService,
+      mailService as unknown as MailService,
+      config as unknown as ConfigService<Env, true>,
+    );
+  });
+
+  it('existing user: stores pwdreset:{sha256(token)} -> userId with TTL 60min, sends e-mail, returns {ok:true}', async () => {
+    const user = makeUser({ id: 'user-1', email: 'joao@example.com' });
+    usersService.findByEmail.mockResolvedValue(user);
+
+    const result = await service.forgotPassword('joao@example.com');
+
+    expect(result).toEqual({ ok: true });
+    expect(redisClient.set).toHaveBeenCalledTimes(1);
+    const [key, value, ex, ttl] = redisClient.set.mock.calls[0] as [
+      string,
+      string,
+      string,
+      number,
+    ];
+    expect(key).toMatch(/^pwdreset:[a-f0-9]{64}$/);
+    expect(value).toBe('user-1');
+    expect(ex).toBe('EX');
+    expect(ttl).toBe(60 * 60);
+
+    expect(mailService.sendPasswordReset).toHaveBeenCalledTimes(1);
+    const [email, link] = mailService.sendPasswordReset.mock.calls[0];
+    expect(email).toBe('joao@example.com');
+    expect(link).toMatch(
+      /^http:\/\/localhost:3000\/redefinir-senha\?token=[A-Za-z0-9_-]+$/,
+    );
+
+    // A chave gravada é o hash do token que está no link, nunca o token puro.
+    const tokenInLink = new URL(link).searchParams.get('token') as string;
+    expect(key).toBe(`pwdreset:${sha256(tokenInLink)}`);
+  });
+
+  it('nonexistent user: still returns {ok:true}, does not store a token or send e-mail', async () => {
+    usersService.findByEmail.mockResolvedValue(null);
+
+    const result = await service.forgotPassword('ninguem@example.com');
+
+    expect(result).toEqual({ ok: true });
+    expect(redisClient.set).not.toHaveBeenCalled();
+    expect(mailService.sendPasswordReset).not.toHaveBeenCalled();
+  });
+
+  it('always 200 even with an empty/blank e-mail', async () => {
+    const result = await service.forgotPassword('   ');
+
+    expect(result).toEqual({ ok: true });
+    expect(usersService.findByEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.resetPassword', () => {
+  let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
+  let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
+  let prisma: { user: { update: jest.Mock } };
+  let redisClient: { get: jest.Mock; del: jest.Mock };
+  let redisService: { client: unknown };
+  let service: AuthService;
+
+  beforeEach(() => {
+    passwordService = { hash: jest.fn().mockResolvedValue('new-bcrypt-hash') };
+    sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
+    prisma = { user: { update: jest.fn().mockResolvedValue(undefined) } };
+    redisClient = {
+      get: jest.fn(),
+      del: jest.fn().mockResolvedValue(1),
+    };
+    redisService = { client: redisClient };
+
+    service = new AuthService(
+      {} as unknown as UsersService,
+      passwordService as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      sessionService as unknown as SessionService,
+      {} as unknown as TokenService,
+      prisma as unknown as PrismaService,
+      redisService as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
+    );
+  });
+
+  it('valid token: updates passwordHash, deletes the reset key, revokes all sessions, returns {ok:true}', async () => {
+    const token = 'plaintext-token-abc';
+    redisClient.get.mockResolvedValue('user-1');
+
+    const result = await service.resetPassword(token, 'newpassword123');
+
+    expect(result).toEqual({ ok: true });
+    expect(redisClient.get).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { passwordHash: 'new-bcrypt-hash' },
+    });
+    expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
+  });
+
+  it('400 "Link inválido ou expirado" when token is absent/expired', async () => {
+    redisClient.get.mockResolvedValue(null);
+
+    await expect(
+      service.resetPassword('missing-or-expired', 'newpassword123'),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'Link inválido ou expirado' },
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(sessionService.revokeAll).not.toHaveBeenCalled();
+  });
+
+  it('400 when password is shorter than 6 characters (after trim)', async () => {
+    await expect(
+      service.resetPassword('some-token', '  12345 '),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+    });
+    expect(redisClient.get).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.changePassword', () => {
+  let passwordService: jest.Mocked<Pick<PasswordService, 'verify' | 'hash'>>;
+  let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
+  let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
+  let service: AuthService;
+
+  beforeEach(() => {
+    passwordService = {
+      verify: jest.fn(),
+      hash: jest.fn().mockResolvedValue('new-bcrypt-hash'),
+    };
+    sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
+    prisma = {
+      user: {
+        findUnique: jest.fn(),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+
+    service = new AuthService(
+      {} as unknown as UsersService,
+      passwordService as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      sessionService as unknown as SessionService,
+      {} as unknown as TokenService,
+      prisma as unknown as PrismaService,
+      {} as unknown as RedisService,
+      {} as unknown as MailService,
+      {} as unknown as ConfigService<Env, true>,
+    );
+  });
+
+  it('401 "Não autenticado" when there is no session', async () => {
+    await expect(
+      service.changePassword(null, 'current', 'newpassword'),
+    ).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'Não autenticado' },
+    });
+  });
+
+  it('400 "Senha atual incorreta." when the current password does not match', async () => {
+    const claims = makeClaims({ sub: 'user-1', sid: 'sid-current' });
+    prisma.user.findUnique.mockResolvedValue(
+      makeUser({ id: 'user-1', passwordHash: 'old-hash' }),
+    );
+    passwordService.verify.mockResolvedValue({
+      valid: false,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.changePassword(claims, 'wrong-current', 'newpassword'),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'Senha atual incorreta.' },
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(sessionService.revokeAll).not.toHaveBeenCalled();
+  });
+
+  it('400 when the new password is shorter than 6 characters (after trim)', async () => {
+    const claims = makeClaims({ sub: 'user-1', sid: 'sid-current' });
+    prisma.user.findUnique.mockResolvedValue(
+      makeUser({ id: 'user-1', passwordHash: 'old-hash' }),
+    );
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.changePassword(claims, 'current-ok', '  1234 '),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+    });
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('success: updates passwordHash and revokes all sessions except the current one', async () => {
+    const claims = makeClaims({ sub: 'user-1', sid: 'sid-current' });
+    prisma.user.findUnique.mockResolvedValue(
+      makeUser({ id: 'user-1', passwordHash: 'old-hash' }),
+    );
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+
+    const result = await service.changePassword(
+      claims,
+      'current-ok',
+      'newpassword123',
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      data: { passwordHash: 'new-bcrypt-hash' },
+    });
+    expect(sessionService.revokeAll).toHaveBeenCalledWith(
+      'user-1',
+      'sid-current',
+    );
   });
 });

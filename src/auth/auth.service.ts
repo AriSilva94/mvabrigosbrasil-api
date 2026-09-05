@@ -1,3 +1,4 @@
+import { randomBytes, createHash } from 'crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -6,16 +7,32 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
 import { PasswordService } from './password/password.service';
 import { LegacyMigrationService } from './legacy-migration.service';
 import { SessionService } from '../redis/session.service';
+import { RedisService } from '../redis/redis.service';
+import { MailService } from '../mail/mail.service';
 import { TokenService, Claims } from './jwt/token.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeRegisterType } from '../common/utils/register-type';
 import { UserOrigin } from '../generated/prisma/enums';
+import type { Env } from '../config/env.validation';
 import type { RegisterDto } from './dto/register.dto';
 import type { User } from '../generated/prisma/client';
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function pwdResetKey(tokenHash: string): string {
+  return `pwdreset:${tokenHash}`;
+}
+
+// Doc 03 §10: link válido por 60 minutos, uso único.
+const PWD_RESET_TTL_SECONDS = 60 * 60;
+const MIN_PASSWORD_LENGTH = 6;
 
 export type LoginResult = {
   userId: string;
@@ -82,6 +99,9 @@ export class AuthService {
     private readonly sessionService: SessionService,
     private readonly tokenService: TokenService,
     private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+    private readonly mailService: MailService,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   async login(email: string, password: string): Promise<LoginResult> {
@@ -338,6 +358,107 @@ export class AuthService {
       return;
     }
     await this.sessionService.revoke(sid);
+  }
+
+  // Doc 03 §10 / doc 05 §3.1. Nunca revela se o e-mail existe: sempre
+  // resolve com `{ ok: true }`, com ou sem usuário encontrado. Quando o
+  // usuário existe, gera um token opaco de 32 bytes, grava no Redis só o
+  // HASH (sha256) do token com TTL de 60 min, e envia o link (com o token em
+  // texto puro) por e-mail — o token puro nunca é persistido em lugar
+  // nenhum.
+  async forgotPassword(email: string): Promise<{ ok: true }> {
+    const normalizedEmail = (email ?? '').trim().toLowerCase();
+    if (normalizedEmail) {
+      const user = await this.usersService.findByEmail(normalizedEmail);
+      if (user) {
+        const token = randomBytes(32).toString('base64url');
+        const tokenHash = sha256(token);
+
+        await this.redisService.client.set(
+          pwdResetKey(tokenHash),
+          user.id,
+          'EX',
+          PWD_RESET_TTL_SECONDS,
+        );
+
+        const appUrl = this.config.get('APP_URL', { infer: true });
+        const link = `${appUrl}/redefinir-senha?token=${token}`;
+        await this.mailService.sendPasswordReset(user.email, link);
+      }
+    }
+
+    return { ok: true };
+  }
+
+  // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
+  // é apagada assim que consumida (com sucesso), e `revokeAll` derruba todas
+  // as sessões existentes do usuário (login forçado em qualquer dispositivo
+  // depois de uma troca de senha via recuperação).
+  async resetPassword(token: string, password: string): Promise<{ ok: true }> {
+    const normalizedPassword = (password ?? '').trim();
+    if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new BadRequestException({
+        error: 'A senha deve ter no mínimo 6 caracteres.',
+      });
+    }
+
+    const key = pwdResetKey(sha256(token ?? ''));
+    const userId = await this.redisService.client.get(key);
+    if (!userId) {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+
+    const passwordHash = await this.passwordService.hash(normalizedPassword);
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+    await this.redisService.client.del(key);
+    await this.sessionService.revokeAll(userId);
+
+    return { ok: true };
+  }
+
+  // Doc 03 §10 / doc 05 §3.1. Exige sessão (`claims` vem do cookie `mv_at`,
+  // lido pelo controller). Ao contrário de `resetPassword` (que derruba
+  // TODAS as sessões — o usuário não sabe a senha, então nenhum dispositivo
+  // é confiável), aqui a sessão atual (`claims.sid`) é preservada: o usuário
+  // provou conhecer a senha atual, então só as OUTRAS sessões são revogadas.
+  async changePassword(
+    claims: Claims | null,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ ok: true }> {
+    if (!claims) {
+      throw new UnauthorizedException({ error: 'Não autenticado' });
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: claims.sub },
+    });
+    const verification = user
+      ? await this.passwordService.verify(currentPassword, user.passwordHash)
+      : { valid: false, needsRehash: false };
+
+    if (!verification.valid) {
+      throw new BadRequestException({ error: 'Senha atual incorreta.' });
+    }
+
+    const normalizedNewPassword = (newPassword ?? '').trim();
+    if (normalizedNewPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new BadRequestException({
+        error: 'A senha deve ter no mínimo 6 caracteres.',
+      });
+    }
+
+    const passwordHash = await this.passwordService.hash(normalizedNewPassword);
+    await this.prisma.user.update({
+      where: { id: (user as User).id },
+      data: { passwordHash },
+    });
+    await this.sessionService.revokeAll(claims.sub, claims.sid);
+
+    return { ok: true };
   }
 
   // Rehash de senha legada gravada em `users.passwordHash` (import parcial —

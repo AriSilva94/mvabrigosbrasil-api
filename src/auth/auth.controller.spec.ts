@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   INestApplication,
   UnauthorizedException,
@@ -458,6 +459,191 @@ describe('AuthController (POST /auth/refresh, POST /auth/logout)', () => {
       const cookies = res.headers['set-cookie'] as unknown as string[];
       expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
       expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+  });
+});
+
+// Task 10: doc 03 §10 / doc 05 §3.1.
+describe('AuthController (POST /auth/forgot-password, /reset-password, /change-password)', () => {
+  let app: INestApplication;
+  const authService = {
+    login: jest.fn(),
+    register: jest.fn(),
+    me: jest.fn(),
+    postLoginRedirect: jest.fn(),
+    refresh: jest.fn(),
+    logout: jest.fn(),
+    forgotPassword: jest.fn(),
+    resetPassword: jest.fn(),
+    changePassword: jest.fn(),
+  };
+  const tokenService = { verify: jest.fn() };
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: authService },
+        { provide: TokenService, useValue: tokenService },
+        { provide: ConfigService, useValue: { get: () => false } },
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.use(cookieParser());
+    app.useGlobalFilters(new HttpExceptionFilter());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('POST /auth/forgot-password', () => {
+    it('200 {ok:true} and forwards the e-mail to the service', async () => {
+      authService.forgotPassword.mockResolvedValue({ ok: true });
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/forgot-password')
+        .send({ email: 'joao@example.com' })
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.forgotPassword).toHaveBeenCalledWith(
+        'joao@example.com',
+      );
+    });
+
+    it('200 {ok:true} even with a malformed body (no e-mail leak via error)', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/forgot-password')
+        .send({})
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.forgotPassword).toHaveBeenCalledWith('');
+    });
+  });
+
+  describe('POST /auth/reset-password', () => {
+    it('200 {ok:true} on success and forwards token/password to the service', async () => {
+      authService.resetPassword.mockResolvedValue({ ok: true });
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/reset-password')
+        .send({ token: 'plain-token', password: 'newpassword123' })
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.resetPassword).toHaveBeenCalledWith(
+        'plain-token',
+        'newpassword123',
+      );
+    });
+
+    it('400 when the service rejects (invalid/expired token)', async () => {
+      authService.resetPassword.mockRejectedValue(
+        new BadRequestException({
+          error: 'Link inválido ou expirado',
+        }),
+      );
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/reset-password')
+        .send({ token: 'bad', password: 'newpassword123' })
+        .expect(400);
+
+      expect(res.body).toEqual({ error: 'Link inválido ou expirado' });
+    });
+
+    it('400 when the body is malformed (missing token/password)', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/reset-password')
+        .send({})
+        .expect(400);
+
+      expect(res.body).toEqual({ error: 'Link inválido ou expirado' });
+      expect(authService.resetPassword).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /auth/change-password', () => {
+    it('200 {ok:true} on success, forwarding claims (from mv_at) and passwords', async () => {
+      authService.changePassword.mockResolvedValue({ ok: true });
+      tokenService.verify.mockResolvedValue({
+        sub: 'user-1',
+        email: 'joao@example.com',
+        role: 'voluntario',
+        isTeamOnly: false,
+        teamDisabled: false,
+        creatorProfileId: null,
+        sid: 'sid-current',
+      });
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/change-password')
+        .set('Cookie', 'mv_at=signed-jwt')
+        .send({ currentPassword: 'old', newPassword: 'newpassword123' })
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.changePassword).toHaveBeenCalledWith(
+        expect.objectContaining({ sub: 'user-1', sid: 'sid-current' }),
+        'old',
+        'newpassword123',
+      );
+    });
+
+    it('401 when there is no mv_at cookie (no session)', async () => {
+      authService.changePassword.mockRejectedValue(
+        new UnauthorizedException({
+          error: 'Não autenticado',
+        }),
+      );
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/change-password')
+        .send({ currentPassword: 'old', newPassword: 'newpassword123' })
+        .expect(401);
+
+      expect(res.body).toEqual({ error: 'Não autenticado' });
+      expect(authService.changePassword).toHaveBeenCalledWith(
+        null,
+        'old',
+        'newpassword123',
+      );
+    });
+
+    it('400 when the body is malformed (missing currentPassword/newPassword)', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/change-password')
+        .send({})
+        .expect(400);
+
+      expect(res.body).toEqual({
+        error: 'Senha atual e nova senha são obrigatórias.',
+      });
+      expect(authService.changePassword).not.toHaveBeenCalled();
     });
   });
 });
