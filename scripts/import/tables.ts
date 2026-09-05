@@ -96,7 +96,18 @@ export function buildInsertSql(
   ].join('\n');
 }
 
-/** Flattens one mirror row (in `config.columns` order) into query params. */
+/**
+ * Flattens one mirror row (in `config.columns` order) into query params.
+ *
+ * Values are copied faithfully, with one known exception: `timestamp(6)`
+ * columns (e.g. `created_at`/`updated_at`) round-trip through node-pg as JS
+ * `Date` objects, which only carry millisecond precision. Any sub-millisecond
+ * component the mirror stored is truncated on the way to the target. Both
+ * schemas declare the same `timestamp(6)`, so this is a driver limitation,
+ * not a schema mismatch -- see `docs/IMPORT.md`'s Open Items section. Not
+ * worth fixing for this phase: it has zero effect on auth or business logic,
+ * and a real cutover reimports with a delta pass anyway.
+ */
 export function rowToParams(
   config: TableImportConfig,
   row: Record<string, unknown>,

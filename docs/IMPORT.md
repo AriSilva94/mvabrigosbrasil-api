@@ -320,6 +320,12 @@ This stops and removes the `mv-mirror` container. The data is not persisted; the
 
 **For a real production cutover,** a second import phase with `ON CONFLICT DO UPDATE` is required to sync changes that occurred between the dump and the cutover window. This is referenced in the migration spec `docs/nestjs-migration/04-schema-prisma-e-dados.md` (in the main repo), section 3.4 (delta step). The infrastructure for this is not yet implemented but is part of the Phase 2 cutover plan.
 
+### Timestamp Precision Below the Millisecond
+
+Both the mirror and the target declare `timestamp(6)` (microsecond precision) for columns like `created_at`/`updated_at`, so the schema itself is faithful. The import path is not: `node-pg` round-trips these columns through JavaScript's `Date` object, which only carries millisecond resolution, so any sub-millisecond component the mirror stored is silently truncated when copied to the target.
+
+This has no known effect on auth or business logic — nothing in the app reads timestamps at sub-millisecond resolution — so it is not being fixed in this phase (see `rowToParams` in `scripts/import/tables.ts`). It is called out here because a real cutover's delta pass (`ON CONFLICT DO UPDATE`, see above) reimports affected rows anyway; if sub-millisecond fidelity ever matters, that delta step is where to address it (e.g. reading the mirror's timestamp as text and inserting it as text instead of through a `Date`).
+
 ### Password Format Validation Status
 
 The password verification path in `src/auth/password/` supports four legacy formats: bcrypt (Supabase GoTrue), WordPress `$wp$2y$`, phpass (`$P$`/`$H$`), and MD5. Positive-case verification has been completed for bcrypt and `$wp$` against real production hashes.

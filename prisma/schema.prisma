@@ -72,19 +72,19 @@ model Shelter {
   wpPostId           Int?      @unique @map("wp_post_id")
   wpPostAuthor       Int?      @map("wp_post_author") // vínculo legado abrigo↔autor WP (304/337 preenchidas)
   profileId          String?   @map("profile_id") @db.Uuid
-  shelterType        String    @map("shelter_type") // public | private | mixed | temporary
+  shelterType        String?   @map("shelter_type") // public | private | mixed | temporary; produção é nullable
   cnpj               String?
   cpf                String?
   name               String
   cep                String? // produção é nullable; 228/337 nulas (mesmo padrão de district)
-  street             String
+  street             String? // produção é nullable
   number             Int? // produção é integer; 230/337 nulas
   district           String? // produção é nullable; 228/337 nulas
-  state              String
-  city               String
+  state              String? // produção é nullable
+  city               String? // produção é nullable
   website            String?
   foundationDate     DateTime? @map("foundation_date") @db.Date // produção é date, anulável (4 linhas nulas)
-  species            String
+  species            String? // produção é nullable
   additionalSpecies  Json?     @map("additional_species") // 245/337 nulas; forma inconsistente (array ou string) em produção — normalização é decisão da camada de aplicação
   temporaryAgreement Boolean?  @map("temporary_agreement") // ⚠️ confirmar (código aceita string)
   referralSource     String?   @map("referral_source")
@@ -92,10 +92,10 @@ model Shelter {
   initialCats        Int?      @map("initial_cats") // produção é anulável, sem default
   initialDogsLt      Int?      @map("initial_dogs_lt")
   initialCatsLt      Int?      @map("initial_cats_lt")
-  authorizedName     String    @map("authorized_name")
-  authorizedRole     String    @map("authorized_role")
-  authorizedEmail    String    @map("authorized_email")
-  authorizedPhone    String    @map("authorized_phone")
+  authorizedName     String?   @map("authorized_name") // produção é nullable
+  authorizedRole     String?   @map("authorized_role") // produção é nullable
+  authorizedEmail    String?   @map("authorized_email") // produção é nullable
+  authorizedPhone    String?   @map("authorized_phone") // produção é nullable
   active             Boolean   @default(true)
   acceptTerms        Boolean   @default(false) @map("accept_terms")
   createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -158,7 +158,7 @@ model Vacancy {
   title                String
   slug                 String?  @unique
   description          String?
-  status               String   @default("active") // active | inactive | closed
+  status               String?  @default("active") // active | inactive | closed; produção é nullable
   periodo              String?
   cargaHoraria         String?  @map("carga_horaria")
   cidade               String?
@@ -200,31 +200,31 @@ model VacancyApplication {
 }
 
 model ShelterDynamics {
-  id                  String   @id @default(uuid()) @db.Uuid
-  shelterId           String   @map("shelter_id") @db.Uuid
-  wpPostId            Int?     @map("wp_post_id")
+  id                  String    @id @default(uuid()) @db.Uuid
+  shelterId           String    @map("shelter_id") @db.Uuid
+  wpPostId            Int?      @map("wp_post_id")
   kind                String // abrigo | lar
-  referenceDate       DateTime @map("reference_date") @db.Date
-  referencePeriod     String?  @map("reference_period") // "YYYY-MM"
-  dynamicType         String   @default("dinamica") @map("dynamic_type") // dinamica | dinamica_lar
-  entradasDeAnimais   Int?     @default(0) @map("entradas_de_animais")
-  entradasDeGatos     Int?     @default(0) @map("entradas_de_gatos")
-  adocoesCaes         Int?     @default(0) @map("adocoes_caes")
-  adocoesGatos        Int?     @default(0) @map("adocoes_gatos")
-  devolucoesCaes      Int?     @default(0) @map("devolucoes_caes")
-  devolucoesGatos     Int?     @default(0) @map("devolucoes_gatos")
-  eutanasiasCaes      Int?     @default(0) @map("eutanasias_caes")
-  eutanasiasGatos     Int?     @default(0) @map("eutanasias_gatos")
-  mortesNaturaisCaes  Int?     @default(0) @map("mortes_naturais_caes")
-  mortesNaturaisGatos Int?     @default(0) @map("mortes_naturais_gatos")
-  doencasCaes         Int?     @default(0) @map("doencas_caes")
-  doencasGatos        Int?     @default(0) @map("doencas_gatos")
-  retornoDeCaes       Int?     @default(0) @map("retorno_de_caes")
-  retornoDeGatos      Int?     @default(0) @map("retorno_de_gatos")
-  retornoLocalCaes    Int?     @default(0) @map("retorno_local_caes")
-  retornoLocalGatos   Int?     @default(0) @map("retorno_local_gatos")
-  createdAt           DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt           DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  referenceDate       DateTime? @map("reference_date") @db.Date // produção é nullable
+  referencePeriod     String?   @map("reference_period") // "YYYY-MM"
+  dynamicType         String    @default("dinamica") @map("dynamic_type") // dinamica | dinamica_lar
+  entradasDeAnimais   Int?      @default(0) @map("entradas_de_animais")
+  entradasDeGatos     Int?      @default(0) @map("entradas_de_gatos")
+  adocoesCaes         Int?      @default(0) @map("adocoes_caes")
+  adocoesGatos        Int?      @default(0) @map("adocoes_gatos")
+  devolucoesCaes      Int?      @default(0) @map("devolucoes_caes")
+  devolucoesGatos     Int?      @default(0) @map("devolucoes_gatos")
+  eutanasiasCaes      Int?      @default(0) @map("eutanasias_caes")
+  eutanasiasGatos     Int?      @default(0) @map("eutanasias_gatos")
+  mortesNaturaisCaes  Int?      @default(0) @map("mortes_naturais_caes")
+  mortesNaturaisGatos Int?      @default(0) @map("mortes_naturais_gatos")
+  doencasCaes         Int?      @default(0) @map("doencas_caes")
+  doencasGatos        Int?      @default(0) @map("doencas_gatos")
+  retornoDeCaes       Int?      @default(0) @map("retorno_de_caes")
+  retornoDeGatos      Int?      @default(0) @map("retorno_de_gatos")
+  retornoLocalCaes    Int?      @default(0) @map("retorno_local_caes")
+  retornoLocalGatos   Int?      @default(0) @map("retorno_local_gatos")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   shelter Shelter @relation(fields: [shelterId], references: [id], onDelete: Cascade)
 
@@ -283,7 +283,7 @@ model TeamMembership {
   memberWpUserId  BigInt?   @map("member_wp_user_id") // produção é bigint
   memberEmail     String?   @map("member_email")
   abrigoPostId    BigInt?   @map("abrigo_post_id") // produção é bigint
-  role            String    @default("member") // owner | manager | member — CHECK na migração
+  role            String?   @default("member") // owner | manager | member — CHECK na migração; produção é nullable
   status          String    @default("pending_member") // pending_owner | pending_member | active — CHECK na migração
   createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

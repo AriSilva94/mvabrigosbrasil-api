@@ -56,11 +56,15 @@ export type ImportAllResult = Record<string, CopyResult>;
  * Runs every table import in dependency order: `users` (Task 3) first, then
  * every table in `TABLES` (also dependency-ordered - see tables.ts).
  *
- * `trigger_shelter_history` is disabled before `shelters` and re-enabled
- * only after `shelter_history`, wrapped in try/finally so it is always
- * re-enabled even if an import in between throws. Skipped entirely in
- * dry-run mode (nothing is written either way) and when `--only` restricts
- * the run to a table outside that span.
+ * `trigger_shelter_history` is disabled before the run touches `shelters`
+ * and re-enabled only after it is done with `shelter_history`, wrapped in
+ * try/finally so it is always re-enabled even if an import in between
+ * throws. This also guards a `--only=shelters` or `--only=shelter_history`
+ * run, which writes directly into one of the two tables without going
+ * through the other -- a partial import left unguarded would forge bogus
+ * history rows. Skipped entirely in dry-run mode (nothing is written
+ * either way) and when `--only` restricts the run to a table outside the
+ * span.
  *
  * After the four legacy WordPress tables with a `SERIAL`/`BIGSERIAL`
  * primary key are imported, their sequence is reset to `MAX(pk)` so the
@@ -85,14 +89,18 @@ export async function importAll(
 
   const tablesToRun = only ? TABLES.filter((t) => t.table === only) : TABLES;
 
-  const spanStartIdx = tablesToRun.findIndex(
-    (t) => t.table === SHELTER_TRIGGER_SPAN.from,
+  // A full run always contains both span endpoints, so this also covers
+  // that case. A `--only=shelters` (or `--only=shelter_history`) run
+  // contains just one endpoint but still writes directly into shelters or
+  // shelter_history, so it must guard the trigger too -- otherwise a
+  // partial import would forge bogus history rows (see SHELTER_TRIGGER_SPAN's
+  // doc comment in tables.ts).
+  const touchesShelterTriggerSpan = tablesToRun.some(
+    (t) =>
+      t.table === SHELTER_TRIGGER_SPAN.from ||
+      t.table === SHELTER_TRIGGER_SPAN.to,
   );
-  const spanEndIdx = tablesToRun.findIndex(
-    (t) => t.table === SHELTER_TRIGGER_SPAN.to,
-  );
-  const needsTriggerToggle =
-    !dryRun && spanStartIdx !== -1 && spanEndIdx !== -1;
+  const needsTriggerToggle = !dryRun && touchesShelterTriggerSpan;
 
   const runCopies = async () => {
     for (const config of tablesToRun) {
@@ -165,15 +173,19 @@ function printReport(results: ImportAllResult, dryRun: boolean): void {
 async function main(): Promise<void> {
   const { dryRun, only } = parseArgs(process.argv.slice(2));
 
+  // `openTarget()` runs only after `openMirror()` has already succeeded, so
+  // a failure there must still close the mirror client it already opened.
+  // `target` starts undefined and is only closed once actually assigned.
   const mirror = await openMirror();
-  const target = await openTarget();
+  let target: Awaited<ReturnType<typeof openTarget>> | undefined;
 
   try {
+    target = await openTarget();
     const results = await importAll(mirror, target, { dryRun, only });
     printReport(results, dryRun);
   } finally {
     await mirror.end();
-    await target.end();
+    await target?.end();
   }
 }
 
