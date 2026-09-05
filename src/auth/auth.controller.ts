@@ -10,6 +10,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import type { MeResult, PostLoginRedirectResult } from './auth.service';
@@ -35,7 +36,13 @@ export class AuthController {
     private readonly tokenService: TokenService,
   ) {}
 
+  // Task 11: 10 tentativas/min por IP. `@nestjs/throttler` v6 rastreia por
+  // IP por padrão; um limite adicional por e-mail (5/min) exigiria uma
+  // chave/getTracker customizados por corpo da requisição, o que não é
+  // trivial com os "named throttlers" da v6 — feito só por IP, com o
+  // desvio registrado no relatório da Task 11.
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   @HttpCode(200)
   async login(
@@ -66,7 +73,9 @@ export class AuthController {
     return { ok: true, migrated: result.migrated, postType: result.role };
   }
 
+  // Task 11: 5 tentativas/10min por IP.
   @Public()
+  @Throttle({ default: { limit: 5, ttl: 600_000 } })
   @Post('register')
   @HttpCode(200)
   async register(
@@ -98,11 +107,11 @@ export class AuthController {
     return { ok: true, userId: result.userId };
   }
 
-  // NÃO marcado `@Public()`: exige sessão. `JwtAuthGuard` ainda não está
-  // registrado globalmente (Task 11), então a leitura do cookie `mv_at` é
-  // feita diretamente aqui via `TokenService.verify` — quando o guard global
-  // existir, `@CurrentUser()` populará `req.user` da mesma forma e este
-  // método pode passar a usá-lo no lugar de `currentClaims`.
+  // NÃO marcado `@Public()`: exige sessão — `JwtAuthGuard` (global desde a
+  // Task 11) já barra a requisição com 401 antes de chegar aqui se o
+  // `mv_at` faltar/for inválido, e também popula `req.user` via
+  // `@CurrentUser()`. `currentClaims` é mantido por não quebrar o
+  // comportamento existente (mesmo resultado, lido diretamente do cookie).
   @Get('me')
   async me(@Req() req: Request): Promise<MeResult> {
     const claims = await this.currentClaims(req);
@@ -150,9 +159,10 @@ export class AuthController {
     }
   }
 
-  // Idempotente: com ou sem cookie `mv_rt`, com ou sem sessão ainda válida,
-  // sempre limpa os cookies e responde 200.
-  @Public()
+  // Task 11: NÃO é `@Public()` — exige um access token válido (`mv_at`) para
+  // ser chamado, como `me`/`change-password`. A limpeza de cookies e o
+  // encerramento da sessão continuam idempotentes em relação ao cookie
+  // `mv_rt` (presente/ausente, sid ainda válido ou não).
   @Post('logout')
   @HttpCode(200)
   async logout(
@@ -169,7 +179,9 @@ export class AuthController {
   // e-mail existe (nem por status, nem por corpo, nem por timing observável
   // no shape da resposta). Um body malformado (sem `email` string) é tratado
   // como e-mail vazio, que também resolve `{ok:true}` sem efeitos colaterais.
+  // Task 11: 3 tentativas/10min por IP.
   @Public()
+  @Throttle({ default: { limit: 3, ttl: 600_000 } })
   @Post('forgot-password')
   @HttpCode(200)
   async forgotPassword(@Body() body: unknown): Promise<OkResponse> {
@@ -193,10 +205,9 @@ export class AuthController {
     );
   }
 
-  // Doc 03 §10 / doc 05 §3.1. NÃO marcado `@Public()` — exige sessão, lida
-  // do cookie `mv_at` da mesma forma que `me`/`postLoginRedirect` (ver
-  // comentário em `me` acima sobre o `JwtAuthGuard` global ainda não
-  // existir).
+  // Doc 03 §10 / doc 05 §3.1. NÃO marcado `@Public()` — exige sessão
+  // (`JwtAuthGuard` global, ver comentário em `me` acima), lida do cookie
+  // `mv_at` da mesma forma que `me`/`postLoginRedirect`.
   @Post('change-password')
   @HttpCode(200)
   async changePassword(
