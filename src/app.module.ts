@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from './auth/auth.module';
 import { PasswordModule } from './auth/password/password.module';
 import { ConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
@@ -12,6 +13,7 @@ import { RedisModule } from './redis/redis.module';
     RedisModule,
     HealthModule,
     PasswordModule,
+    AuthModule,
   ],
   controllers: [],
   providers: [],
