@@ -26,11 +26,11 @@ export class TokenService {
    * Sign a JWT token with the given claims.
    * Uses HS256 algorithm with AUTH_JWT_SECRET and AUTH_ACCESS_TTL.
    */
-  sign(claims: Claims): string {
+  async sign(claims: Claims): Promise<string> {
     const secret = this.configService.getOrThrow('AUTH_JWT_SECRET');
     const expiresIn = this.configService.getOrThrow('AUTH_ACCESS_TTL');
 
-    return this.jwtService.sign(claims, {
+    return this.jwtService.signAsync(claims, {
       secret,
       expiresIn,
       algorithm: 'HS256',
@@ -47,6 +47,7 @@ export class TokenService {
       const secret = this.configService.getOrThrow('AUTH_JWT_SECRET');
       const decoded = await this.jwtService.verifyAsync<Claims>(token, {
         secret,
+        algorithms: ['HS256'],
       });
       return decoded;
     } catch {

@@ -56,7 +56,7 @@ describe('TokenService', () => {
   });
 
   describe('sign', () => {
-    it('should produce a valid JWT token with HS256 algorithm', () => {
+    it('should produce a valid JWT token with HS256 algorithm', async () => {
       const claims: Claims = {
         sub: 'user-123',
         email: 'user@example.com',
@@ -67,7 +67,7 @@ describe('TokenService', () => {
         sid: 'session-789',
       };
 
-      const token = tokenService.sign(claims);
+      const token = await tokenService.sign(claims);
 
       expect(token).toBeDefined();
       expect(typeof token).toBe('string');
@@ -83,7 +83,7 @@ describe('TokenService', () => {
       }
     });
 
-    it('should include expiry based on AUTH_ACCESS_TTL', () => {
+    it('should include expiry based on AUTH_ACCESS_TTL', async () => {
       const claims: Claims = {
         sub: 'user-123',
         email: 'user@example.com',
@@ -94,7 +94,7 @@ describe('TokenService', () => {
         sid: 'session-789',
       };
 
-      const token = tokenService.sign(claims);
+      const token = await tokenService.sign(claims);
       const decoded: Record<string, number | undefined> | null =
         jwtService.decode(token);
 
@@ -123,7 +123,7 @@ describe('TokenService', () => {
         sid: 'session-789',
       };
 
-      const token = tokenService.sign(claims);
+      const token = await tokenService.sign(claims);
       const verified = await tokenService.verify(token);
 
       expect(verified).toBeDefined();
@@ -147,7 +147,7 @@ describe('TokenService', () => {
         sid: 'session-789',
       };
 
-      const token = tokenService.sign(claims);
+      const token = await tokenService.sign(claims);
       const tamperedToken = token.slice(0, -10) + 'TAMPERED!';
 
       const verified = await tokenService.verify(tamperedToken);
