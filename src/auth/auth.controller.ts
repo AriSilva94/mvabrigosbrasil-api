@@ -7,6 +7,7 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Request, Response } from 'express';
@@ -14,13 +15,14 @@ import { AuthService } from './auth.service';
 import type { MeResult, PostLoginRedirectResult } from './auth.service';
 import { loginSchema } from './dto/login.dto';
 import { registerSchema } from './dto/register.dto';
-import { setAuthCookies } from './cookies/cookies';
+import { setAuthCookies, clearAuthCookies } from './cookies/cookies';
 import { Public } from './decorators/public';
 import { TokenService, Claims } from './jwt/token.service';
 import type { Env } from '../config/env.validation';
 
 type LoginResponse = { ok: true; migrated: boolean; postType: string | null };
 type RegisterResponse = { ok: true; userId: string };
+type OkResponse = { ok: true };
 
 @Controller('auth')
 export class AuthController {
@@ -112,6 +114,54 @@ export class AuthController {
     return this.authService.postLoginRedirect(claims);
   }
 
+  // Doc 03 §7, §10 / doc 05 §3.1. `mv_rt` = `${sid}.${rt}` (convenção da
+  // task 7, ver `login`/`register` acima) — o sid é lido daqui, e não do
+  // `mv_at` (que pode já estar expirado quando o refresh é necessário).
+  @Public()
+  @Post('refresh')
+  @HttpCode(200)
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<OkResponse> {
+    const parsed = this.parseRefreshCookie(req);
+    if (!parsed) {
+      clearAuthCookies(res, this.config);
+      throw new UnauthorizedException({ error: 'Sessão expirada' });
+    }
+
+    try {
+      const result = await this.authService.refresh(parsed.sid, parsed.rt);
+      setAuthCookies(
+        res,
+        { at: result.at, rt: `${result.sid}.${result.rt}` },
+        this.config,
+      );
+      return { ok: true };
+    } catch (err) {
+      // Cobre tanto o reuso/roubo de rt (SessionService.rotate já destruiu
+      // a sessão) quanto qualquer outra falha ao renovar: em nenhum caso o
+      // cliente deve continuar com cookies de uma sessão morta.
+      clearAuthCookies(res, this.config);
+      throw err;
+    }
+  }
+
+  // Idempotente: com ou sem cookie `mv_rt`, com ou sem sessão ainda válida,
+  // sempre limpa os cookies e responde 200.
+  @Public()
+  @Post('logout')
+  @HttpCode(200)
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<OkResponse> {
+    const parsed = this.parseRefreshCookie(req);
+    await this.authService.logout(parsed?.sid ?? null);
+    clearAuthCookies(res, this.config);
+    return { ok: true };
+  }
+
   private async currentClaims(req: Request): Promise<Claims | null> {
     const cookies = req.cookies as Record<string, string> | undefined;
     const token = cookies?.mv_at;
@@ -119,5 +169,26 @@ export class AuthController {
       return null;
     }
     return this.tokenService.verify(token);
+  }
+
+  // Divide o valor do cookie `mv_rt` (`${sid}.${rt}`) no PRIMEIRO "." — o rt
+  // opaco (base64url) não contém ".", mas usamos indexOf em vez de split
+  // para não quebrar caso algum dia contenha. Retorna null se o cookie
+  // estiver ausente ou não tiver o formato esperado (sid e rt não-vazios).
+  private parseRefreshCookie(req: Request): { sid: string; rt: string } | null {
+    const cookies = req.cookies as Record<string, string> | undefined;
+    const raw = cookies?.mv_rt;
+    if (!raw) {
+      return null;
+    }
+
+    const dotIndex = raw.indexOf('.');
+    if (dotIndex <= 0 || dotIndex === raw.length - 1) {
+      return null;
+    }
+
+    const sid = raw.slice(0, dotIndex);
+    const rt = raw.slice(dotIndex + 1);
+    return { sid, rt };
   }
 }

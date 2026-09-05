@@ -150,6 +150,22 @@ describe('SessionService', () => {
     });
   });
 
+  describe('getUserId', () => {
+    it('returns the userId stored for a known sid', async () => {
+      const { sid } = await service.create('user-8');
+
+      const userId = await service.getUserId(sid);
+
+      expect(userId).toBe('user-8');
+    });
+
+    it('returns null for an unknown sid', async () => {
+      const userId = await service.getUserId('unknown-sid');
+
+      expect(userId).toBeNull();
+    });
+  });
+
   describe('revoke', () => {
     it('removes sess:{sid} and removes sid from user_sess:{userId}', async () => {
       const { sid } = await service.create('user-5');
@@ -185,6 +201,32 @@ describe('SessionService', () => {
       expect(await redis.client.get(`sess:${b.sid}`)).toBeNull();
       const members = await redis.client.smembers('user_sess:user-7');
       expect(members).toEqual([a.sid]);
+    });
+  });
+
+  // Doc 03 §12, case 13: reusing an already-rotated refresh token must 401
+  // AND fully destroy the session, so that a subsequent refresh attempt with
+  // the CURRENT (latest) rt also fails. This is the theft-detection
+  // guarantee that `AuthController.refresh` relies on (task 9).
+  describe('refresh reuse / theft detection (end-to-end)', () => {
+    it('rejects the old rt after one rotation, and also rejects the current rt afterwards', async () => {
+      const { sid, rt: originalRt } = await service.create('user-9');
+
+      const firstRotation = await service.rotate(sid, originalRt);
+      expect(firstRotation).not.toBeNull();
+      const currentRt = firstRotation!.rt;
+
+      // Simulate a stolen/replayed OLD refresh token being used again.
+      const reuseAttempt = await service.rotate(sid, originalRt);
+      expect(reuseAttempt).toBeNull();
+
+      // The session must now be fully destroyed: even the CURRENT
+      // (legitimately latest) rt no longer works.
+      const afterTheftWithCurrentRt = await service.rotate(sid, currentRt);
+      expect(afterTheftWithCurrentRt).toBeNull();
+
+      expect(await service.validate(sid, currentRt)).toBeNull();
+      expect(await service.getUserId(sid)).toBeNull();
     });
   });
 });

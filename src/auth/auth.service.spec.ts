@@ -554,3 +554,123 @@ describe('AuthService.postLoginRedirect', () => {
     });
   });
 });
+
+// Task 9: POST /auth/refresh (doc 03 §7, §10; doc 05 §3.1).
+describe('AuthService.refresh', () => {
+  let usersService: jest.Mocked<Pick<UsersService, 'resolveRole'>>;
+  let sessionService: jest.Mocked<
+    Pick<SessionService, 'rotate' | 'getUserId' | 'revoke'>
+  >;
+  let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
+  let prisma: { user: { findUnique: jest.Mock } };
+  let service: AuthService;
+
+  beforeEach(() => {
+    usersService = {
+      resolveRole: jest.fn().mockResolvedValue('voluntario'),
+    };
+    sessionService = {
+      rotate: jest.fn(),
+      getUserId: jest.fn(),
+      revoke: jest.fn().mockResolvedValue(undefined),
+    };
+    tokenService = {
+      sign: jest.fn().mockResolvedValue('new-signed-jwt'),
+    };
+    prisma = {
+      user: { findUnique: jest.fn() },
+    };
+
+    service = new AuthService(
+      usersService as unknown as UsersService,
+      {} as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      sessionService as unknown as SessionService,
+      tokenService as unknown as TokenService,
+      prisma as unknown as PrismaService,
+    );
+  });
+
+  it('rotates the session, reloads the user from the DB, and signs fresh claims', async () => {
+    sessionService.rotate.mockResolvedValue({ rt: 'new-rt' });
+    sessionService.getUserId.mockResolvedValue('user-1');
+    const user = makeUser({ role: 'gerente', teamDisabled: true });
+    prisma.user.findUnique.mockResolvedValue(user);
+    usersService.resolveRole.mockResolvedValue('gerente');
+
+    const result = await service.refresh('sid-1', 'old-rt');
+
+    expect(sessionService.rotate).toHaveBeenCalledWith('sid-1', 'old-rt');
+    expect(sessionService.getUserId).toHaveBeenCalledWith('sid-1');
+    expect(prisma.user.findUnique).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+    });
+    expect(tokenService.sign).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sub: 'user-1',
+        role: 'gerente',
+        teamDisabled: true,
+        sid: 'sid-1',
+      }) as unknown,
+    );
+    expect(result).toEqual({
+      at: 'new-signed-jwt',
+      rt: 'new-rt',
+      sid: 'sid-1',
+    });
+  });
+
+  it('401 "Sessão expirada" when rotate returns null (invalid/reused/expired rt)', async () => {
+    sessionService.rotate.mockResolvedValue(null);
+
+    await expect(service.refresh('sid-1', 'stale-rt')).rejects.toMatchObject({
+      response: { error: 'Sessão expirada' },
+    });
+    expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    expect(tokenService.sign).not.toHaveBeenCalled();
+  });
+
+  it('401 and revokes the session when the user backing the sid no longer exists', async () => {
+    sessionService.rotate.mockResolvedValue({ rt: 'new-rt' });
+    sessionService.getUserId.mockResolvedValue('user-1');
+    prisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(service.refresh('sid-1', 'old-rt')).rejects.toMatchObject({
+      response: { error: 'Sessão expirada' },
+    });
+    expect(sessionService.revoke).toHaveBeenCalledWith('sid-1');
+    expect(tokenService.sign).not.toHaveBeenCalled();
+  });
+});
+
+// Task 9: POST /auth/logout.
+describe('AuthService.logout', () => {
+  let sessionService: jest.Mocked<Pick<SessionService, 'revoke'>>;
+  let service: AuthService;
+
+  beforeEach(() => {
+    sessionService = {
+      revoke: jest.fn().mockResolvedValue(undefined),
+    };
+
+    service = new AuthService(
+      {} as unknown as UsersService,
+      {} as unknown as PasswordService,
+      {} as unknown as LegacyMigrationService,
+      sessionService as unknown as SessionService,
+      {} as unknown as TokenService,
+      {} as unknown as PrismaService,
+    );
+  });
+
+  it('revokes the session for a known sid', async () => {
+    await service.logout('sid-1');
+
+    expect(sessionService.revoke).toHaveBeenCalledWith('sid-1');
+  });
+
+  it('is a no-op (does not throw) when sid is null', async () => {
+    await expect(service.logout(null)).resolves.toBeUndefined();
+    expect(sessionService.revoke).not.toHaveBeenCalled();
+  });
+});

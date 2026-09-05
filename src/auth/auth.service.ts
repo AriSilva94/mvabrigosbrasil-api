@@ -49,6 +49,12 @@ export type MeResult = {
   };
 };
 
+export type RefreshResult = {
+  at: string;
+  rt: string;
+  sid: string;
+};
+
 export type PostLoginRedirectResult = {
   hasShelter: boolean;
   hasVolunteer: boolean;
@@ -282,6 +288,56 @@ export class AuthService {
       hasProfile,
       redirectTo: hasProfile ? '/painel' : '/meu-cadastro',
     };
+  }
+
+  // Doc 03 §7, §10 / doc 05 §3.1. `sid`/`rt` vêm do cookie `mv_rt`
+  // (`${sid}.${rt}`, convenção da task 7), já separados pelo controller.
+  // `SessionService.rotate` é single-use com detecção de reuso/roubo: uma
+  // chamada com um `rt` já rotacionado (ou desconhecido) devolve `null` E
+  // destrói a sessão — não fraqueamos esse contrato aqui. As claims do novo
+  // access token são recarregadas do banco (não do token antigo) para
+  // refletir `role`/`teamDisabled` atuais.
+  async refresh(sid: string, rt: string): Promise<RefreshResult> {
+    const rotated = await this.sessionService.rotate(sid, rt);
+    if (!rotated) {
+      throw new UnauthorizedException({ error: 'Sessão expirada' });
+    }
+
+    const userId = await this.sessionService.getUserId(sid);
+    const user = userId
+      ? await this.prisma.user.findUnique({ where: { id: userId } })
+      : null;
+
+    if (!user) {
+      // Usuário foi removido entre o login e o refresh: não há claims
+      // válidas para reconstruir. Revoga a sessão órfã por higiene e trata
+      // como sessão expirada.
+      await this.sessionService.revoke(sid);
+      throw new UnauthorizedException({ error: 'Sessão expirada' });
+    }
+
+    const role = await this.usersService.resolveRole(user);
+    const claims: Claims = {
+      sub: user.id,
+      email: user.email,
+      role,
+      isTeamOnly: user.isTeamOnly,
+      teamDisabled: user.teamDisabled,
+      creatorProfileId: user.creatorProfileId,
+      sid,
+    };
+    const at = await this.tokenService.sign(claims);
+
+    return { at, rt: rotated.rt, sid };
+  }
+
+  // Idempotente: funciona sem sessão (sid nulo/desconhecido) — o controller
+  // sempre limpa os cookies e responde 200, com ou sem sessão ativa.
+  async logout(sid: string | null): Promise<void> {
+    if (!sid) {
+      return;
+    }
+    await this.sessionService.revoke(sid);
   }
 
   // Rehash de senha legada gravada em `users.passwordHash` (import parcial —

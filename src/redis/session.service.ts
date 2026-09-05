@@ -120,6 +120,20 @@ export class SessionService {
     return { rt: newRt };
   }
 
+  // Small accessor added in task 9 so `AuthController.refresh` can rebuild
+  // fresh JWT claims after a successful rotation without weakening
+  // `rotate`'s single-use/theft-detection contract (its return type stays
+  // `{ rt } | null`). Reads the same `sess:{sid}` record `rotate` just
+  // wrote/validated; does not consume or mutate anything.
+  async getUserId(sid: string): Promise<string | null> {
+    const raw = await this.redis.client.get(sessionKey(sid));
+    if (!raw) {
+      return null;
+    }
+    const stored = JSON.parse(raw) as StoredSession;
+    return stored.userId;
+  }
+
   async revoke(sid: string): Promise<void> {
     const raw = await this.redis.client.get(sessionKey(sid));
     if (!raw) {

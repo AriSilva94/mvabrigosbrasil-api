@@ -295,3 +295,169 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
     expect(authService.me).toHaveBeenCalledWith(null);
   });
 });
+
+// Task 9: POST /auth/refresh, POST /auth/logout.
+describe('AuthController (POST /auth/refresh, POST /auth/logout)', () => {
+  let app: INestApplication;
+  const authService = {
+    login: jest.fn(),
+    register: jest.fn(),
+    me: jest.fn(),
+    postLoginRedirect: jest.fn(),
+    refresh: jest.fn(),
+    logout: jest.fn(),
+  };
+  const tokenService = { verify: jest.fn() };
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [AuthController],
+      providers: [
+        { provide: AuthService, useValue: authService },
+        { provide: TokenService, useValue: tokenService },
+        { provide: ConfigService, useValue: { get: () => false } },
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.use(cookieParser());
+    app.useGlobalFilters(new HttpExceptionFilter());
+    await app.init();
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('POST /auth/refresh', () => {
+    it('parses sid.rt from mv_rt, rotates, and sets fresh cookies on success', async () => {
+      authService.refresh.mockResolvedValue({
+        at: 'new-signed-jwt',
+        rt: 'new-opaque-rt',
+        sid: 'session-id-1',
+      });
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/refresh')
+        .set('Cookie', 'mv_rt=session-id-1.old-opaque-rt')
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.refresh).toHaveBeenCalledWith(
+        'session-id-1',
+        'old-opaque-rt',
+      );
+
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      const atCookie = cookies.find((c) => c.startsWith('mv_at='));
+      const rtCookie = cookies.find((c) => c.startsWith('mv_rt='));
+      expect(atCookie).toContain('new-signed-jwt');
+      expect(rtCookie).toContain('session-id-1.new-opaque-rt');
+    });
+
+    it('splits rt on the FIRST dot only (rt itself may contain dots)', async () => {
+      authService.refresh.mockResolvedValue({
+        at: 'new-signed-jwt',
+        rt: 'new-opaque-rt',
+        sid: 'session-id-1',
+      });
+
+      await request(app.getHttpServer() as Parameters<typeof request>[0])
+        .post('/auth/refresh')
+        .set('Cookie', 'mv_rt=session-id-1.part-a.part-b')
+        .expect(200);
+
+      expect(authService.refresh).toHaveBeenCalledWith(
+        'session-id-1',
+        'part-a.part-b',
+      );
+    });
+
+    it('401 + clears cookies when mv_rt cookie is absent', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/refresh')
+        .expect(401);
+
+      expect(res.body).toEqual({ error: 'Sessão expirada' });
+      expect(authService.refresh).not.toHaveBeenCalled();
+
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+
+    it('401 + clears cookies when mv_rt cookie is malformed (no dot)', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/refresh')
+        .set('Cookie', 'mv_rt=nodothere')
+        .expect(401);
+
+      expect(res.body).toEqual({ error: 'Sessão expirada' });
+      expect(authService.refresh).not.toHaveBeenCalled();
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+
+    it('401 + clears cookies when AuthService.refresh rejects (rotate returned null: reused/invalid rt)', async () => {
+      authService.refresh.mockRejectedValue(
+        new UnauthorizedException({ error: 'Sessão expirada' }),
+      );
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/refresh')
+        .set('Cookie', 'mv_rt=session-id-1.stale-rt')
+        .expect(401);
+
+      expect(res.body).toEqual({ error: 'Sessão expirada' });
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+  });
+
+  describe('POST /auth/logout', () => {
+    it('revokes the session (sid parsed from mv_rt) and clears cookies', async () => {
+      authService.logout.mockResolvedValue(undefined);
+
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/logout')
+        .set('Cookie', 'mv_rt=session-id-1.some-rt')
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.logout).toHaveBeenCalledWith('session-id-1');
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+
+    it('is idempotent: 200 + clears cookies even without a session cookie', async () => {
+      const res = await request(
+        app.getHttpServer() as Parameters<typeof request>[0],
+      )
+        .post('/auth/logout')
+        .expect(200);
+
+      expect(res.body).toEqual({ ok: true });
+      expect(authService.logout).toHaveBeenCalledWith(null);
+      const cookies = res.headers['set-cookie'] as unknown as string[];
+      expect(cookies.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+      expect(cookies.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+    });
+  });
+});
