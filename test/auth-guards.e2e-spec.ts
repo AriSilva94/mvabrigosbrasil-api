@@ -6,6 +6,7 @@ import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { TokenService } from './../src/auth/jwt/token.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
+import { RedisService } from './../src/redis/redis.service';
 import cookieParser from 'cookie-parser';
 
 // Task 11: guards globais (`JwtAuthGuard`/`RolesGuard`/`ThrottlerGuard`,
@@ -29,6 +30,7 @@ class FakePrismaService {
 describe('Global guards + throttling (e2e)', () => {
   let app: INestApplication<App>;
   let tokenService: TokenService;
+  let redisService: RedisService;
 
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -48,6 +50,7 @@ describe('Global guards + throttling (e2e)', () => {
     await app.init();
 
     tokenService = app.get(TokenService);
+    redisService = app.get(RedisService);
   });
 
   afterEach(async () => {
@@ -97,11 +100,65 @@ describe('Global guards + throttling (e2e)', () => {
     expect(res.body).toEqual({ error: 'E-mail e senha são obrigatórios' });
   });
 
-  it('POST /api/v1/auth/logout requires a session (401 without token)', async () => {
+  it('POST /api/v1/auth/logout is public and idempotent: 200 + clears cookies with NO cookies at all', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/logout')
-      .expect(401);
-    expect(res.body).toEqual({ error: 'Não autenticado' });
+      .expect(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const setCookie = res.headers['set-cookie'] as unknown as
+      string[] | undefined;
+    expect(setCookie).toBeDefined();
+    const cleared = setCookie ?? [];
+    expect(cleared.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+    expect(cleared.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+  });
+
+  it('POST /api/v1/auth/logout is public and idempotent: 200 + clears cookies with an expired/absent mv_at but a (garbage) mv_rt', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/logout')
+      .set('Cookie', ['mv_rt=fakesid.fakert'])
+      .expect(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const setCookie =
+      (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+    expect(setCookie.some((c) => c.startsWith('mv_at=;'))).toBe(true);
+    expect(setCookie.some((c) => c.startsWith('mv_rt=;'))).toBe(true);
+  });
+
+  it('POST /api/v1/auth/logout revokes a real session from Redis (sess:{sid} deleted)', async () => {
+    // Seeds `sess:{sid}` directly in the real Redis instance (same shape
+    // `SessionService` writes), instead of going through `login` (which
+    // needs a real Postgres user — out of scope here, Prisma is faked).
+    // Proves `logout` reaches `SessionService.revoke(sid)` for a sid
+    // recovered from `mv_rt`, end to end through the real Redis client.
+    const sid = `e2e-sid-${Date.now()}`;
+    await redisService.client.set(
+      `sess:${sid}`,
+      JSON.stringify({
+        userId: 'user-1',
+        rtHash: 'irrelevant-for-this-test',
+        createdAt: Date.now(),
+      }),
+      'EX',
+      3600,
+    );
+    await redisService.client.sadd(`user_sess:user-1`, sid);
+
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/logout')
+      .set('Cookie', [`mv_rt=${sid}.some-refresh-token`])
+      .expect(200);
+    expect(res.body).toEqual({ ok: true });
+
+    const stillThere = await redisService.client.get(`sess:${sid}`);
+    expect(stillThere).toBeNull();
+    const stillMember = await redisService.client.sismember(
+      'user_sess:user-1',
+      sid,
+    );
+    expect(stillMember).toBe(0);
   });
 
   it('throttles POST /api/v1/auth/forgot-password after 3 requests/10min per IP (429)', async () => {

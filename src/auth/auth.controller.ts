@@ -159,10 +159,13 @@ export class AuthController {
     }
   }
 
-  // Task 11: NÃO é `@Public()` — exige um access token válido (`mv_at`) para
-  // ser chamado, como `me`/`change-password`. A limpeza de cookies e o
-  // encerramento da sessão continuam idempotentes em relação ao cookie
-  // `mv_rt` (presente/ausente, sid ainda válido ou não).
+  // Doc 03 §7: logout apenas limpa a sessão, sem pré-condição de auth.
+  // `@Public()` é essencial aqui — logout é exatamente a ação que um
+  // usuário toma quando o `mv_at` já expirou, então o `JwtAuthGuard` (Task
+  // 11, global) não pode barrar a requisição antes do handler rodar.
+  // Idempotente: com ou sem cookie `mv_rt`, com ou sem sessão ainda válida,
+  // sempre limpa os cookies e responde 200 (Task 9).
+  @Public()
   @Post('logout')
   @HttpCode(200)
   async logout(
