@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule, JwtService } from '@nestjs/jwt';
+import type { StringValue } from 'ms';
 import * as jwt from 'jsonwebtoken';
 import { TokenService, Claims } from './token.service';
 import { Env } from '../../config/env.validation';
@@ -28,7 +29,7 @@ describe('TokenService', () => {
         JwtModule.register({
           secret: mockEnv.AUTH_JWT_SECRET,
           signOptions: {
-            expiresIn: mockEnv.AUTH_ACCESS_TTL,
+            expiresIn: mockEnv.AUTH_ACCESS_TTL as StringValue,
             algorithm: 'HS256',
           },
         }),
