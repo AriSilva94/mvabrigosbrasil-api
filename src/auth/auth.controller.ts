@@ -63,7 +63,7 @@ export class AuthController {
 
   @Public()
   @Post('register')
-  @HttpCode(201)
+  @HttpCode(200)
   async register(
     @Body() body: unknown,
     @Req() req: Request,

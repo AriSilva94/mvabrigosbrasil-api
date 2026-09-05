@@ -157,7 +157,7 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
     )
       .post('/auth/register')
       .send({ email: 'joao@example.com', password: 'secretpw' })
-      .expect(201);
+      .expect(200);
 
     expect(res.body).toEqual({ ok: true, userId: 'new-user-1' });
 
@@ -200,7 +200,7 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
         password: 'secretpw',
         teamOnly: true,
       })
-      .expect(201);
+      .expect(200);
 
     expect(res.body).toEqual({ ok: true, userId: 'new-team-user' });
     const cookies = res.headers['set-cookie'] as unknown as
