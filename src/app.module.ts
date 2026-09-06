@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ApplicationsModule } from './applications/applications.module';
 import { AuthModule } from './auth/auth.module';
 import { PasswordModule } from './auth/password/password.module';
 import { ConfigModule } from './config/config.module';
@@ -7,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
 import { SheltersModule } from './shelters/shelters.module';
+import { VacanciesModule } from './vacancies/vacancies.module';
 
 @Module({
   imports: [
@@ -18,6 +20,8 @@ import { SheltersModule } from './shelters/shelters.module';
     AuthModule,
     SheltersModule,
     DynamicsModule,
+    VacanciesModule,
+    ApplicationsModule,
   ],
   controllers: [],
   providers: [],
