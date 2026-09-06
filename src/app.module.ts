@@ -5,6 +5,7 @@ import { ConfigModule } from './config/config.module';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
+import { SheltersModule } from './shelters/shelters.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { RedisModule } from './redis/redis.module';
     HealthModule,
     PasswordModule,
     AuthModule,
+    SheltersModule,
   ],
   controllers: [],
   providers: [],
