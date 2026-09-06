@@ -11,6 +11,7 @@ import { hasChanges } from '../common/utils/diff';
 import type { UserRole } from '../generated/prisma/enums';
 import type { Prisma } from '../generated/prisma/client';
 import type { ShelterProfileInput } from './schemas/shelter-profile.schema';
+import { CacheInvalidationService } from '../redis/cache-invalidation.service';
 import { unformatDigits } from './schemas/shelter-profile.schema';
 import {
   dateOnly,
@@ -216,6 +217,7 @@ export class SheltersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly usersService: UsersService,
+    private readonly cacheInvalidation: CacheInvalidationService,
   ) {}
 
   async validateProfile(profileId: string): Promise<ValidateProfileResult> {
@@ -380,6 +382,8 @@ export class SheltersService {
       throw new InternalServerErrorException('Erro ao salvar cadastro');
     }
 
+    await this.cacheInvalidation.invalidatePublicData();
+
     return { ok: true, shelter: mapDbToFormData(shelter) };
   }
 
@@ -405,6 +409,8 @@ export class SheltersService {
         select: { active: true },
       });
     });
+
+    await this.cacheInvalidation.invalidatePublicData();
 
     return {
       ok: true,

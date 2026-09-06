@@ -12,6 +12,7 @@ import {
   SheltersService,
 } from './shelters.service';
 import type { ShelterProfileInput } from './schemas/shelter-profile.schema';
+import type { CacheInvalidationService } from '../redis/cache-invalidation.service';
 
 const userId = '11111111-1111-1111-1111-111111111111';
 
@@ -107,6 +108,7 @@ function createPrismaMock(): PrismaMock {
 describe('SheltersService', () => {
   let prisma: PrismaMock;
   let usersService: jest.Mocked<Pick<UsersService, 'resolveRole'>>;
+  let cacheInvalidation: { invalidatePublicData: jest.Mock };
   let service: SheltersService;
 
   beforeEach(() => {
@@ -114,9 +116,11 @@ describe('SheltersService', () => {
     usersService = {
       resolveRole: jest.fn(),
     };
+    cacheInvalidation = { invalidatePublicData: jest.fn() };
     service = new SheltersService(
       prisma as unknown as PrismaService,
       usersService as unknown as UsersService,
+      cacheInvalidation as unknown as CacheInvalidationService,
     );
   });
 
@@ -253,6 +257,7 @@ describe('SheltersService', () => {
     expect(result.ok).toBe(true);
     expect(result.shelter.name).toBe('Abrigo Bom Lar');
     expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(cacheInvalidation.invalidatePublicData).not.toHaveBeenCalled();
   });
 
   it('upsertMyShelter preserves existing LT population when temporaryAgreement is not true', async () => {
@@ -305,6 +310,7 @@ describe('SheltersService', () => {
       initialCatsLt: 6,
     });
     expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(cacheInvalidation.invalidatePublicData).toHaveBeenCalledTimes(1);
   });
 
   it('upsertMyShelter preserves empty website strings like the frontend payload', async () => {
@@ -347,6 +353,7 @@ describe('SheltersService', () => {
     await expect(service.upsertMyShelter(userId, validInput)).rejects.toThrow(
       'Erro ao salvar cadastro',
     );
+    expect(cacheInvalidation.invalidatePublicData).not.toHaveBeenCalled();
   });
 
   it('toggleMyShelterActive updates only the shelter owned by profileId', async () => {
@@ -377,6 +384,7 @@ describe('SheltersService', () => {
       data: { active: false },
       select: { active: true },
     });
+    expect(cacheInvalidation.invalidatePublicData).toHaveBeenCalledTimes(1);
   });
 
   it('toggleMyShelterActive throws 404 when profile has no shelter', async () => {

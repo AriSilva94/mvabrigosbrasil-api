@@ -3,6 +3,7 @@ import type { Claims } from '../auth/jwt/token.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { DynamicsService } from './dynamics.service';
 import type { DynamicsSubmit } from './schemas/dynamics.schema';
+import type { CacheInvalidationService } from '../redis/cache-invalidation.service';
 
 const loggerErrorSpy = jest
   .spyOn(Logger.prototype, 'error')
@@ -61,7 +62,12 @@ describe('DynamicsService shelter resolution', () => {
 
   beforeEach(() => {
     prisma = createPrismaMock();
-    service = new DynamicsService(prisma as unknown as PrismaService);
+    service = new DynamicsService(
+      prisma as unknown as PrismaService,
+      {
+        invalidatePublicData: jest.fn(),
+      } as unknown as CacheInvalidationService,
+    );
   });
 
   it('resolves the shelter owned by claims.sub', async () => {
@@ -137,6 +143,7 @@ describe('DynamicsService shelter resolution', () => {
 
 describe('DynamicsService operations', () => {
   let prisma: PrismaMock;
+  let cacheInvalidation: { invalidatePublicData: jest.Mock };
   let service: DynamicsService;
 
   const payload: DynamicsSubmit = {
@@ -163,7 +170,11 @@ describe('DynamicsService operations', () => {
 
   beforeEach(() => {
     prisma = createPrismaMock();
-    service = new DynamicsService(prisma as unknown as PrismaService);
+    cacheInvalidation = { invalidatePublicData: jest.fn() };
+    service = new DynamicsService(
+      prisma as unknown as PrismaService,
+      cacheInvalidation as unknown as CacheInvalidationService,
+    );
   });
 
   it('returns empty sections when the user has no shelter', async () => {
@@ -227,6 +238,7 @@ describe('DynamicsService operations', () => {
       update: data,
     });
     expect(result.sections).toHaveLength(2);
+    expect(cacheInvalidation.invalidatePublicData).toHaveBeenCalledTimes(1);
   });
 
   it('translates an upsert failure to save_failed', async () => {
@@ -238,6 +250,7 @@ describe('DynamicsService operations', () => {
         response: { error: 'save_failed' },
       }),
     );
+    expect(cacheInvalidation.invalidatePublicData).not.toHaveBeenCalled();
   });
 
   it('deletes only by id and the resolved shelter id', async () => {
@@ -251,6 +264,7 @@ describe('DynamicsService operations', () => {
       where: { id: 'record-1', shelterId: shelter.id },
     });
     expect(result.sections).toHaveLength(2);
+    expect(cacheInvalidation.invalidatePublicData).toHaveBeenCalledTimes(1);
   });
 
   it('translates a scoped delete failure to delete_failed', async () => {
@@ -265,6 +279,7 @@ describe('DynamicsService operations', () => {
     ).rejects.toEqual(
       expect.objectContaining({ response: { error: 'delete_failed' } }),
     );
+    expect(cacheInvalidation.invalidatePublicData).not.toHaveBeenCalled();
   });
 
   it.each([

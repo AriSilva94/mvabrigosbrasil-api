@@ -12,6 +12,7 @@ import {
   type DynamicsDisplay,
 } from './calc';
 import type { DynamicsSubmit } from './schemas/dynamics.schema';
+import { CacheInvalidationService } from '../redis/cache-invalidation.service';
 
 const shelterSelect = {
   id: true,
@@ -68,7 +69,10 @@ function parseTemporaryAgreementValue(value: unknown): boolean | null {
 export class DynamicsService {
   private readonly logger = new Logger(DynamicsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheInvalidation: CacheInvalidationService,
+  ) {}
 
   async resolveShelter(
     claims: Claims,
@@ -214,6 +218,8 @@ export class DynamicsService {
       throw new InternalServerErrorException({ error: 'save_failed' });
     }
 
+    await this.cacheInvalidation.invalidatePublicData();
+
     return { sections: await this.fetchDynamicsDisplays(shelter) };
   }
 
@@ -234,6 +240,8 @@ export class DynamicsService {
       );
       throw new InternalServerErrorException({ error: 'delete_failed' });
     }
+
+    await this.cacheInvalidation.invalidatePublicData();
 
     return { sections: await this.fetchDynamicsDisplays(shelter) };
   }
