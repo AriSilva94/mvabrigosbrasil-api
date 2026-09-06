@@ -3,6 +3,7 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
+import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 const MAX_SYNTHETIC_ID_ATTEMPTS = 5;
@@ -10,6 +11,12 @@ const MAX_SYNTHETIC_ID_ATTEMPTS = 5;
 class MembershipWriteError extends Error {
   constructor(readonly stage: 'delete' | 'insert') {
     super(stage);
+  }
+}
+
+class SyntheticIdWriteError extends Error {
+  constructor(readonly originalError: unknown) {
+    super('synthetic-id-write');
   }
 }
 
@@ -113,56 +120,110 @@ export class AdminService {
       throw new NotFoundException('Gerente não encontrado');
     }
 
-    const shelters = await this.prisma.shelter.findMany({
-      where: { id: { in: shelterIds } },
-      select: { id: true, wpPostId: true },
-    });
-    const wpPostIds: number[] = [];
-    for (const shelter of shelters) {
-      if (shelter.wpPostId !== null) {
-        wpPostIds.push(shelter.wpPostId);
-        continue;
-      }
-      wpPostIds.push(await this.assignSyntheticWpPostId(shelter.id));
-    }
-
     const memberWpUserId = BigInt(manager.wpUserId);
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        try {
-          await tx.teamMembership.deleteMany({
-            where: { memberWpUserId, role: 'manager' },
-          });
-        } catch {
-          throw new MembershipWriteError('delete');
-        }
+    for (let attempt = 0; attempt < MAX_SYNTHETIC_ID_ATTEMPTS; attempt += 1) {
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await this.lockReplacement(tx, memberWpUserId, shelterIds);
 
-        if (wpPostIds.length) {
+          const shelters = await tx.shelter.findMany({
+            where: { id: { in: shelterIds } },
+            select: { id: true, wpPostId: true },
+          });
+          const wpPostIds: number[] = [];
+          for (const shelter of shelters) {
+            if (shelter.wpPostId !== null) {
+              wpPostIds.push(shelter.wpPostId);
+              continue;
+            }
+            wpPostIds.push(await this.assignSyntheticWpPostId(tx, shelter.id));
+          }
+
           try {
-            await tx.teamMembership.createMany({
-              data: wpPostIds.map((abrigoPostId) => ({
-                memberWpUserId,
-                abrigoPostId: BigInt(abrigoPostId),
-                role: 'manager',
-                status: 'active',
-              })),
+            await tx.teamMembership.deleteMany({
+              where: { memberWpUserId, role: 'manager' },
             });
           } catch {
-            throw new MembershipWriteError('insert');
+            throw new MembershipWriteError('delete');
           }
+
+          if (wpPostIds.length) {
+            try {
+              await tx.teamMembership.createMany({
+                data: wpPostIds.map((abrigoPostId) => ({
+                  memberWpUserId,
+                  abrigoPostId: BigInt(abrigoPostId),
+                  role: 'manager',
+                  status: 'active',
+                })),
+              });
+            } catch {
+              throw new MembershipWriteError('insert');
+            }
+          }
+        });
+        return { success: true as const };
+      } catch (error) {
+        if (
+          error instanceof SyntheticIdWriteError &&
+          isUniqueConflict(error.originalError) &&
+          attempt + 1 < MAX_SYNTHETIC_ID_ATTEMPTS
+        ) {
+          continue;
         }
-      });
-    } catch (error) {
-      if (error instanceof MembershipWriteError && error.stage === 'delete') {
+        if (error instanceof SyntheticIdWriteError) {
+          throw new InternalServerErrorException(
+            'Erro ao vincular abrigo sem ID legado',
+          );
+        }
+        if (error instanceof MembershipWriteError && error.stage === 'delete') {
+          throw new InternalServerErrorException('Erro ao atualizar vínculos');
+        }
+        if (error instanceof MembershipWriteError && error.stage === 'insert') {
+          throw new InternalServerErrorException('Erro ao criar vínculos');
+        }
         throw new InternalServerErrorException('Erro ao atualizar vínculos');
       }
-      if (error instanceof MembershipWriteError && error.stage === 'insert') {
-        throw new InternalServerErrorException('Erro ao criar vínculos');
-      }
-      throw new InternalServerErrorException('Erro ao atualizar vínculos');
     }
 
-    return { success: true as const };
+    throw new InternalServerErrorException(
+      'Erro ao vincular abrigo sem ID legado',
+    );
+  }
+
+  private async lockReplacement(
+    tx: Prisma.TransactionClient,
+    memberWpUserId: bigint,
+    shelterIds: string[],
+  ): Promise<void> {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(${memberWpUserId})`;
+
+    const uniqueShelterIds = [...new Set(shelterIds)].sort();
+    for (const shelterId of uniqueShelterIds) {
+      await tx.$queryRaw`
+        SELECT id
+        FROM shelters
+        WHERE id = ${shelterId}::uuid
+        FOR UPDATE
+      `;
+    }
+  }
+
+  private async assignSyntheticWpPostId(
+    tx: Prisma.TransactionClient,
+    shelterId: string,
+  ): Promise<number> {
+    const wpPostId = syntheticWpPostId();
+    try {
+      const updated = await tx.shelter.update({
+        where: { id: shelterId },
+        data: { wpPostId },
+        select: { wpPostId: true },
+      });
+      return updated.wpPostId as number;
+    } catch (error) {
+      throw new SyntheticIdWriteError(error);
+    }
   }
 
   async listMyShelters(profileId: string) {
@@ -191,24 +252,5 @@ export class AdminService {
         })
       : [];
     return { shelters: shelters.map(shelterDto) };
-  }
-
-  private async assignSyntheticWpPostId(shelterId: string): Promise<number> {
-    for (let attempt = 0; attempt < MAX_SYNTHETIC_ID_ATTEMPTS; attempt += 1) {
-      const wpPostId = syntheticWpPostId();
-      try {
-        const updated = await this.prisma.shelter.update({
-          where: { id: shelterId },
-          data: { wpPostId },
-          select: { wpPostId: true },
-        });
-        return updated.wpPostId as number;
-      } catch (error) {
-        if (!isUniqueConflict(error)) break;
-      }
-    }
-    throw new InternalServerErrorException(
-      'Erro ao vincular abrigo sem ID legado',
-    );
   }
 }

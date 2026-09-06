@@ -6,6 +6,11 @@ import type { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
 type TxMock = {
+  $queryRaw: jest.Mock;
+  shelter: {
+    findMany: jest.Mock;
+    update: jest.Mock;
+  };
   teamMembership: {
     deleteMany: jest.Mock;
     createMany: jest.Mock;
@@ -14,6 +19,11 @@ type TxMock = {
 
 describe('AdminService', () => {
   const tx: TxMock = {
+    $queryRaw: jest.fn(),
+    shelter: {
+      findMany: jest.fn(),
+      update: jest.fn(),
+    },
     teamMembership: {
       deleteMany: jest.fn(),
       createMany: jest.fn(),
@@ -34,6 +44,7 @@ describe('AdminService', () => {
     );
     tx.teamMembership.deleteMany.mockResolvedValue({ count: 0 });
     tx.teamMembership.createMany.mockResolvedValue({ count: 0 });
+    tx.$queryRaw.mockResolvedValue([]);
     service = new AdminService(prisma as unknown as PrismaService);
   });
 
@@ -95,22 +106,26 @@ describe('AdminService', () => {
   it('assigns a negative synthetic id and replaces links atomically', async () => {
     jest.spyOn(Math, 'random').mockReturnValueOnce(0.123);
     prisma.user.findUnique.mockResolvedValue({ wpUserId: 12 });
-    prisma.shelter.findMany.mockResolvedValue([
+    tx.shelter.findMany.mockResolvedValue([
       { id: 's1', wpPostId: null },
       { id: 's2', wpPostId: 88 },
     ]);
-    prisma.shelter.update.mockResolvedValue({ wpPostId: -123000001 });
+    tx.shelter.update.mockResolvedValue({ wpPostId: -123000001 });
 
     await expect(
       service.replaceManagerShelters('manager-id', ['s1', 's2']),
     ).resolves.toEqual({ success: true });
 
-    expect(prisma.shelter.update).toHaveBeenCalledWith({
+    expect(tx.shelter.update).toHaveBeenCalledWith({
       where: { id: 's1' },
       data: { wpPostId: -123000001 },
       select: { wpPostId: true },
     });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(tx.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+      tx.shelter.findMany.mock.invocationCallOrder[0],
+    );
     expect(tx.teamMembership.deleteMany).toHaveBeenCalledWith({
       where: { memberWpUserId: 12n, role: 'manager' },
     });
@@ -138,8 +153,8 @@ describe('AdminService', () => {
   ])('retries synthetic ids on unique conflicts', async (error) => {
     jest.spyOn(Math, 'random').mockReturnValue(0);
     prisma.user.findUnique.mockResolvedValue({ wpUserId: 12 });
-    prisma.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
-    prisma.shelter.update
+    tx.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
+    tx.shelter.update
       .mockRejectedValueOnce(error)
       .mockRejectedValueOnce(error)
       .mockRejectedValueOnce(error)
@@ -149,39 +164,40 @@ describe('AdminService', () => {
     await expect(
       service.replaceManagerShelters('manager-id', ['s1']),
     ).resolves.toEqual({ success: true });
-    expect(prisma.shelter.update).toHaveBeenCalledTimes(5);
+    expect(tx.shelter.update).toHaveBeenCalledTimes(5);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(5);
   });
 
   it('fails after five unique conflicts', async () => {
     prisma.user.findUnique.mockResolvedValue({ wpUserId: 12 });
-    prisma.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
-    prisma.shelter.update.mockRejectedValue({ code: 'P2002' });
+    tx.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
+    tx.shelter.update.mockRejectedValue({ code: 'P2002' });
 
     await expect(
       service.replaceManagerShelters('manager-id', ['s1']),
     ).rejects.toThrow(
       new InternalServerErrorException('Erro ao vincular abrigo sem ID legado'),
     );
-    expect(prisma.shelter.update).toHaveBeenCalledTimes(5);
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.shelter.update).toHaveBeenCalledTimes(5);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(5);
   });
 
   it('does not retry a non-unique synthetic id failure', async () => {
     prisma.user.findUnique.mockResolvedValue({ wpUserId: 12 });
-    prisma.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
-    prisma.shelter.update.mockRejectedValue(new Error('db down'));
+    tx.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: null }]);
+    tx.shelter.update.mockRejectedValue(new Error('db down'));
 
     await expect(
       service.replaceManagerShelters('manager-id', ['s1']),
     ).rejects.toThrow(
       new InternalServerErrorException('Erro ao vincular abrigo sem ID legado'),
     );
-    expect(prisma.shelter.update).toHaveBeenCalledTimes(1);
+    expect(tx.shelter.update).toHaveBeenCalledTimes(1);
   });
 
   it('maps delete and insert failures to their literal stage errors', async () => {
     prisma.user.findUnique.mockResolvedValue({ wpUserId: 12 });
-    prisma.shelter.findMany.mockResolvedValue([]);
+    tx.shelter.findMany.mockResolvedValue([]);
     tx.teamMembership.deleteMany.mockRejectedValueOnce(new Error('delete'));
 
     await expect(
@@ -191,7 +207,7 @@ describe('AdminService', () => {
     );
 
     tx.teamMembership.deleteMany.mockResolvedValue({ count: 1 });
-    prisma.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: 88 }]);
+    tx.shelter.findMany.mockResolvedValue([{ id: 's1', wpPostId: 88 }]);
     tx.teamMembership.createMany.mockRejectedValueOnce(new Error('insert'));
     await expect(
       service.replaceManagerShelters('manager-id', ['s1']),
