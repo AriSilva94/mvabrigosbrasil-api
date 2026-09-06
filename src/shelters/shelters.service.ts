@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import { hasChanges } from '../common/utils/diff';
 import type { UserRole } from '../generated/prisma/enums';
+import type { Prisma } from '../generated/prisma/client';
 import type { ShelterProfileInput } from './schemas/shelter-profile.schema';
 import { unformatDigits } from './schemas/shelter-profile.schema';
 import {
@@ -68,6 +69,7 @@ export type ValidateProfileResult = {
 };
 
 type ValidationRecord = Record<string, unknown>;
+const MAX_HISTORY_LIMIT = 100;
 
 export function isFieldEmpty(value: unknown): boolean {
   if (value === null || value === undefined) return true;
@@ -182,6 +184,31 @@ function preserveLtPopulation(
   };
 }
 
+function normalizePagination(limit: number, offset: number) {
+  if (
+    !Number.isInteger(limit) ||
+    !Number.isInteger(offset) ||
+    limit < 1 ||
+    offset < 0
+  ) {
+    throw new BadRequestException('Parâmetros de paginação inválidos');
+  }
+
+  return {
+    limit: Math.min(limit, MAX_HISTORY_LIMIT),
+    offset,
+  };
+}
+
+function parseAddressNumber(number: string): number {
+  const parsed = parseInt(number, 10);
+  if (!Number.isInteger(parsed)) {
+    throw new BadRequestException('Número inválido');
+  }
+
+  return parsed;
+}
+
 @Injectable()
 export class SheltersService {
   constructor(
@@ -197,6 +224,16 @@ export class SheltersService {
       ? await this.usersService.resolveRole(user)
       : null;
     const isTeamOnly = Boolean(user?.isTeamOnly);
+
+    if (!user) {
+      return {
+        isValid: true,
+        requiresProfileUpdate: false,
+        missingFields: [],
+        registerType,
+        profileExists: false,
+      };
+    }
 
     if (
       registerType === 'admin' ||
@@ -377,6 +414,7 @@ export class SheltersService {
   }
 
   async getMyShelterHistory(profileId: string, limit = 50, offset = 0) {
+    const pagination = normalizePagination(limit, offset);
     const shelter = await this.prisma.shelter.findUnique({
       where: { profileId },
       select: { id: true },
@@ -390,8 +428,8 @@ export class SheltersService {
       this.prisma.shelterHistory.findMany({
         where: { shelterId: shelter.id },
         orderBy: { changedAt: 'desc' },
-        take: limit,
-        skip: offset,
+        take: pagination.limit,
+        skip: pagination.offset,
       }),
       this.prisma.shelterHistory.count({
         where: { shelterId: shelter.id },
@@ -411,8 +449,8 @@ export class SheltersService {
         changed_by: row.changedBy,
       })),
       total,
-      limit,
-      offset,
+      limit: pagination.limit,
+      offset: pagination.offset,
     };
   }
 
@@ -426,7 +464,7 @@ export class SheltersService {
       throw new BadRequestException('CEP é obrigatório');
     }
 
-    const where: Record<string, unknown> = {
+    const where: Prisma.ShelterWhereInput = {
       cep: unformatDigits(cep),
       active: true,
       profileId: { not: profileId },
@@ -434,7 +472,7 @@ export class SheltersService {
 
     if (street && number) {
       where.street = { equals: street.trim(), mode: 'insensitive' };
-      where.number = parseInt(number, 10);
+      where.number = parseAddressNumber(number);
     }
 
     const shelters = await this.prisma.shelter.findMany({

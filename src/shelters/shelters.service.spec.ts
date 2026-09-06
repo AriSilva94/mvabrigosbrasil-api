@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   InternalServerErrorException,
   NotFoundException,
@@ -191,6 +192,19 @@ describe('SheltersService', () => {
     expect(prisma.volunteer.findFirst).toHaveBeenCalledWith({
       where: { ownerProfileId: userId },
     });
+  });
+
+  it('validateProfile reports missing profile when the JWT user no longer exists', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(service.validateProfile(userId)).resolves.toEqual({
+      isValid: true,
+      requiresProfileUpdate: false,
+      missingFields: [],
+      registerType: null,
+      profileExists: false,
+    });
+    expect(usersService.resolveRole).not.toHaveBeenCalled();
   });
 
   it('upsertMyShelter throws 409 when the user profile no longer exists', async () => {
@@ -410,6 +424,34 @@ describe('SheltersService', () => {
     });
   });
 
+  it('getMyShelterHistory rejects invalid pagination before querying history', async () => {
+    await expect(service.getMyShelterHistory(userId, NaN, 0)).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.getMyShelterHistory(userId, 50, -1)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(prisma.shelter.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('getMyShelterHistory clamps very large limits', async () => {
+    prisma.shelter.findUnique.mockResolvedValue({ id: 'shelter-1' });
+    prisma.shelterHistory.findMany.mockResolvedValue([]);
+    prisma.shelterHistory.count.mockResolvedValue(0);
+
+    await expect(
+      service.getMyShelterHistory(userId, 10_000, 0),
+    ).resolves.toMatchObject({
+      history: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
+    expect(prisma.shelterHistory.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 100, skip: 0 }),
+    );
+  });
+
   it('checkAddress filters active shelters by CEP and excludes the current profile', async () => {
     prisma.shelter.findMany.mockResolvedValue([
       {
@@ -454,6 +496,13 @@ describe('SheltersService', () => {
         state: true,
       },
     });
+  });
+
+  it('checkAddress rejects invalid numbers before querying shelters', async () => {
+    await expect(
+      service.checkAddress(userId, '12345-678', 'Rua Um', 'abc'),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.shelter.findMany).not.toHaveBeenCalled();
   });
 
   it('listSheltersForAdmin returns D1 fields ordered by name', async () => {
