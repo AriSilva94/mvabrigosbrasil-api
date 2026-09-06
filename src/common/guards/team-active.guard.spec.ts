@@ -65,4 +65,15 @@ describe('TeamActiveGuard', () => {
       guard.canActivate(makeContext({ ...baseClaims, teamDisabled: true })),
     ).toThrow('Acesso negado');
   });
+
+  it('throws Forbidden when @RequireTeamActive is present but req.user is missing', () => {
+    getAllAndOverride.mockReturnValue(true);
+
+    expect(() => guard.canActivate(makeContext(undefined))).toThrow(
+      ForbiddenException,
+    );
+    expect(() => guard.canActivate(makeContext(undefined))).toThrow(
+      'Acesso negado',
+    );
+  });
 });

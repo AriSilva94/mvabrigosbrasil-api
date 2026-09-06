@@ -14,6 +14,7 @@ import { TEAM_ACTIVE_KEY } from '../decorators/team-active';
  * ran first and populated `req.user`.
  *
  * - No `@RequireTeamActive` metadata -> allow.
+ * - Metadata present but `req.user` missing -> 403 (defensive).
  * - Metadata present and `req.user.teamDisabled` true -> 403.
  */
 @Injectable()
@@ -34,7 +35,7 @@ export class TeamActiveGuard implements CanActivate {
       .switchToHttp()
       .getRequest<Request & { user?: Claims }>();
 
-    if (req.user?.teamDisabled) {
+    if (!req.user || req.user.teamDisabled) {
       throw new ForbiddenException('Acesso negado');
     }
 
