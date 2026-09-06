@@ -9,6 +9,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
 import { SheltersModule } from './shelters/shelters.module';
 import { VacanciesModule } from './vacancies/vacancies.module';
+import { VolunteersModule } from './volunteers/volunteers.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { VacanciesModule } from './vacancies/vacancies.module';
     DynamicsModule,
     VacanciesModule,
     ApplicationsModule,
+    VolunteersModule,
   ],
   controllers: [],
   providers: [],
