@@ -1,4 +1,8 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import type { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from '../users/users.service';
 import {
@@ -210,7 +214,7 @@ describe('SheltersService', () => {
       district: 'Centro',
       state: 'sp',
       city: 'Sao Paulo',
-      website: null,
+      website: '',
       foundationDate: new Date('2020-01-02T00:00:00.000Z'),
       species: 'dogs',
       additionalSpecies: ['cats'],
@@ -287,6 +291,48 @@ describe('SheltersService', () => {
       initialCatsLt: 6,
     });
     expect(tx.$executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('upsertMyShelter preserves empty website strings like the frontend payload', async () => {
+    const tx: TransactionMock = {
+      $executeRaw: jest.fn(),
+      shelter: {
+        upsert: jest.fn<Promise<Record<string, unknown>>, [ShelterUpsertArg]>(),
+        update: jest.fn(),
+      },
+    };
+    prisma.user.findUnique.mockResolvedValue({ id: userId });
+    prisma.shelter.findUnique.mockResolvedValue(null);
+    tx.shelter.upsert.mockResolvedValue({
+      profileId: userId,
+      website: '',
+      shelterType: 'private',
+      name: 'Abrigo Bom Lar',
+      active: true,
+    });
+    prisma.$transaction.mockImplementation(
+      async (callback: (transaction: TransactionMock) => Promise<unknown>) =>
+        callback(tx),
+    );
+
+    await service.upsertMyShelter(userId, validInput);
+
+    const upsertCall = tx.shelter.upsert.mock.calls[0]?.[0];
+    expect(upsertCall?.create).toMatchObject({ website: '' });
+    expect(upsertCall?.update).toMatchObject({ website: '' });
+  });
+
+  it('upsertMyShelter returns the documented save error when Prisma write fails', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: userId });
+    prisma.shelter.findUnique.mockResolvedValue(null);
+    prisma.$transaction.mockRejectedValue(new Error('db down'));
+
+    await expect(service.upsertMyShelter(userId, validInput)).rejects.toThrow(
+      InternalServerErrorException,
+    );
+    await expect(service.upsertMyShelter(userId, validInput)).rejects.toThrow(
+      'Erro ao salvar cadastro',
+    );
   });
 
   it('toggleMyShelterActive updates only the shelter owned by profileId', async () => {
@@ -367,14 +413,6 @@ describe('SheltersService', () => {
   it('checkAddress filters active shelters by CEP and excludes the current profile', async () => {
     prisma.shelter.findMany.mockResolvedValue([
       {
-        profileId: userId,
-        name: 'Meu Abrigo',
-        street: 'Rua Um',
-        number: 1,
-        city: 'Cidade',
-        state: 'SP',
-      },
-      {
         profileId: 'other-user',
         name: 'Outro Abrigo',
         street: 'Rua Um',
@@ -403,6 +441,7 @@ describe('SheltersService', () => {
       where: {
         cep: '12345678',
         active: true,
+        profileId: { not: userId },
         street: { equals: 'Rua Um', mode: 'insensitive' },
         number: 1,
       },

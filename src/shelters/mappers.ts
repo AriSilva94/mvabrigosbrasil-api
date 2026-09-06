@@ -45,7 +45,7 @@ export type ShelterProfileDbData = {
   district: string;
   state: string;
   city: string;
-  website: string | null;
+  website: string | null | undefined;
   foundationDate: Date;
   species: string;
   additionalSpecies: string[];
@@ -169,7 +169,7 @@ export function mapShelterProfileToDb(
     district: payload.district,
     state: payload.state,
     city: payload.city,
-    website: payload.website || null,
+    website: payload.website,
     foundationDate: toDateInput(payload.foundationDate),
     species: payload.species,
     additionalSpecies: payload.additionalSpecies ?? [],

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -325,15 +326,20 @@ export class SheltersService {
       };
     }
 
-    const shelter = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.user_id', ${profileId}, true)`;
+    let shelter: Parameters<typeof mapDbToFormData>[0];
+    try {
+      shelter = await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.user_id', ${profileId}, true)`;
 
-      return tx.shelter.upsert({
-        where: { profileId },
-        create: payload,
-        update: payload,
+        return tx.shelter.upsert({
+          where: { profileId },
+          create: payload,
+          update: payload,
+        });
       });
-    });
+    } catch {
+      throw new InternalServerErrorException('Erro ao salvar cadastro');
+    }
 
     return { ok: true, shelter: mapDbToFormData(shelter) };
   }
@@ -423,6 +429,7 @@ export class SheltersService {
     const where: Record<string, unknown> = {
       cep: unformatDigits(cep),
       active: true,
+      profileId: { not: profileId },
     };
 
     if (street && number) {
@@ -442,14 +449,10 @@ export class SheltersService {
       },
     });
 
-    const otherShelters = shelters.filter(
-      (shelter) => shelter.profileId !== profileId,
-    );
-
     return {
-      exists: otherShelters.length > 0,
-      count: otherShelters.length,
-      shelters: otherShelters.map((shelter) => ({
+      exists: shelters.length > 0,
+      count: shelters.length,
+      shelters: shelters.map((shelter) => ({
         name: shelter.name,
         street: shelter.street,
         number: shelter.number,
