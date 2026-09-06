@@ -10,6 +10,7 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { RedisService } from './../src/redis/redis.service';
+import { refreshRotationGraceKey } from './../src/redis/session.keys';
 import { TokenService } from './../src/auth/jwt/token.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 
@@ -443,7 +444,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     userIds.push(user12.id);
 
-    // ---- Case 13: refresh reuse ----
+    // ---- Case 13: concurrent refresh and outside-grace reuse ----
     const user13 = await prisma.user.create({
       data: {
         email: EMAIL(13),
@@ -756,7 +757,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     expect(claims?.isTeamOnly).toBe(true);
   });
 
-  it('Case 13: refresh reuse revokes the session and returns 401', async () => {
+  it('Case 13: concurrent refreshes converge, then reuse outside grace revokes', async () => {
     const loginRes = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ email: EMAIL(13), password: CASE13_PW })
@@ -772,33 +773,59 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     trackSession(sid, user13!.id);
 
-    // First refresh: legitimate, rotates rt1 -> rt2.
-    const refresh1 = await request(app.getHttpServer())
-      .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt1}`])
-      .expect(200);
+    const [refresh1, refresh2] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', [`mv_rt=${rt1}`])
+        .expect(200),
+      request(app.getHttpServer())
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', [`mv_rt=${rt1}`])
+        .expect(200),
+    ]);
     expect(refresh1.body).toEqual({ ok: true });
+    expect(refresh2.body).toEqual({ ok: true });
     const refresh1Cookies = refresh1.headers[
       'set-cookie'
     ] as unknown as CookieJar;
+    const refresh2Cookies = refresh2.headers[
+      'set-cookie'
+    ] as unknown as CookieJar;
     const rt2 = extractCookie(refresh1Cookies, 'mv_rt');
+    const duplicateRt2 = extractCookie(refresh2Cookies, 'mv_rt');
     expect(rt2).toBeTruthy();
     expect(rt2).not.toBe(rt1);
+    expect(duplicateRt2).toBe(rt2);
 
-    // Reuse of the already-rotated rt1: theft detection, session revoked, 401.
-    const refresh2 = await request(app.getHttpServer())
+    const refresh3 = await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt1}`])
+      .set('Cookie', [`mv_rt=${rt2}`])
+      .expect(200);
+    const rt3 = extractCookie(
+      refresh3.headers['set-cookie'] as unknown as CookieJar,
+      'mv_rt',
+    );
+    expect(rt3).toBeTruthy();
+
+    const rt1Token = rt1!.slice(rt1!.indexOf('.') + 1);
+    const rt2Token = rt2!.slice(rt2!.indexOf('.') + 1);
+    await redis.client.del(
+      refreshRotationGraceKey(sid, sha256(rt1Token)),
+      refreshRotationGraceKey(sid, sha256(rt2Token)),
+    );
+
+    const outsideGraceReuse = await request(app.getHttpServer())
+      .post('/api/v1/auth/refresh')
+      .set('Cookie', [`mv_rt=${rt2}`])
       .expect(401);
-    expect(refresh2.body).toEqual({ error: 'Sessão expirada' });
+    expect(outsideGraceReuse.body).toEqual({ error: 'Sessão expirada' });
 
     const sessionAfter = await redis.client.get(`sess:${sid}`);
     expect(sessionAfter).toBeNull();
 
-    // Even the freshly-rotated rt2 is dead now (revoke() nukes the sid).
     await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt2}`])
+      .set('Cookie', [`mv_rt=${rt3}`])
       .expect(401);
   });
 

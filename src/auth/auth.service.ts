@@ -312,11 +312,10 @@ export class AuthService {
 
   // Doc 03 §7, §10 / doc 05 §3.1. `sid`/`rt` vêm do cookie `mv_rt`
   // (`${sid}.${rt}`, convenção da task 7), já separados pelo controller.
-  // `SessionService.rotate` é single-use com detecção de reuso/roubo: uma
-  // chamada com um `rt` já rotacionado (ou desconhecido) devolve `null` E
-  // destrói a sessão — não fraqueamos esse contrato aqui. As claims do novo
-  // access token são recarregadas do banco (não do token antigo) para
-  // refletir `role`/`teamDisabled` atuais.
+  // `SessionService.rotate` aceita duplicatas apenas na janela curta de
+  // concorrência; fora dela, um `rt` rotacionado (ou desconhecido) devolve
+  // `null` e destrói a sessão. As claims do novo access token são recarregadas
+  // do banco (não do token antigo) para refletir `role`/`teamDisabled` atuais.
   async refresh(sid: string, rt: string): Promise<RefreshResult> {
     const rotated = await this.sessionService.rotate(sid, rt);
     if (!rotated) {

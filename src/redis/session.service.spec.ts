@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { RedisService } from './redis.service';
+import { refreshRotationGraceKey } from './session.keys';
 import { SessionService } from './session.service';
 
 const UUID_RE =
@@ -25,8 +26,9 @@ describe('SessionService', () => {
 
   afterEach(async () => {
     const keys = await redis.client.keys('sess:*');
+    const graceKeys = await redis.client.keys('sess_grace:*');
     const userSessKeys = await redis.client.keys('user_sess:*');
-    const all = [...keys, ...userSessKeys];
+    const all = [...keys, ...graceKeys, ...userSessKeys];
     if (all.length > 0) {
       await redis.client.del(...all);
     }
@@ -98,6 +100,22 @@ describe('SessionService', () => {
   });
 
   describe('rotate', () => {
+    it('returns the same valid successor to concurrent uses of the current rt', async () => {
+      const { sid, rt } = await service.create('user-concurrent');
+
+      const [first, second] = await Promise.all([
+        service.rotate(sid, rt),
+        service.rotate(sid, rt),
+      ]);
+
+      expect(first).not.toBeNull();
+      expect(second).not.toBeNull();
+      expect(second?.rt).toBe(first?.rt);
+      expect(await service.validate(sid, first!.rt)).toEqual({
+        userId: 'user-concurrent',
+      });
+    });
+
     it('returns a new rt for the same sid and updates rtHash', async () => {
       const { sid, rt } = await service.create('user-3');
 
@@ -129,19 +147,107 @@ describe('SessionService', () => {
       expect(result).toEqual({ userId: 'user-3' });
     });
 
-    it('returns null and deletes the session when an already-rotated rt is reused (theft detection)', async () => {
+    it('keeps the raw successor only in a short-lived grace record', async () => {
+      const { sid, rt } = await service.create('user-grace-storage');
+
+      const rotated = await service.rotate(sid, rt);
+
+      const sessionRaw = await redis.client.get(`sess:${sid}`);
+      const graceKey = refreshRotationGraceKey(sid, sha256(rt));
+      const graceRaw = await redis.client.get(graceKey);
+      expect(sessionRaw).not.toContain(rotated!.rt);
+      expect(graceRaw).toContain(rotated!.rt);
+      expect(await redis.client.ttl(graceKey)).toBeGreaterThan(0);
+      expect(await redis.client.ttl(graceKey)).toBeLessThanOrEqual(5);
+    });
+
+    it('returns the same successor for an immediate duplicate without revoking', async () => {
       const { sid, rt } = await service.create('user-4');
-      await service.rotate(sid, rt);
+      const firstRotation = await service.rotate(sid, rt);
+
+      const duplicate = await service.rotate(sid, rt);
+
+      expect(duplicate).toEqual(firstRotation);
+      expect(await service.validate(sid, firstRotation!.rt)).toEqual({
+        userId: 'user-4',
+      });
+      expect(await redis.client.get(`sess:${sid}`)).not.toBeNull();
+      expect(await redis.client.smembers('user_sess:user-4')).toContain(sid);
+    });
+
+    it('does not recover a stale grace successor after that successor rotates', async () => {
+      const { sid, rt: originalRt } = await service.create('user-stale-grace');
+      const firstRotation = await service.rotate(sid, originalRt);
+      const secondRotation = await service.rotate(sid, firstRotation!.rt);
+
+      const staleDuplicate = await service.rotate(sid, originalRt);
+
+      expect(staleDuplicate).toBeNull();
+      expect(await service.validate(sid, secondRotation!.rt)).toBeNull();
+    });
+
+    it('revokes the session when the previous rt is reused after grace expires', async () => {
+      const { sid, rt } = await service.create('user-grace-expired');
+      const firstRotation = await service.rotate(sid, rt);
+      await redis.client.del(refreshRotationGraceKey(sid, sha256(rt)));
 
       const reuseResult = await service.rotate(sid, rt);
 
       expect(reuseResult).toBeNull();
+      expect(await redis.client.get(`sess:${sid}`)).toBeNull();
+      expect(
+        await redis.client.smembers('user_sess:user-grace-expired'),
+      ).not.toContain(sid);
+      expect(await service.validate(sid, firstRotation!.rt)).toBeNull();
+    });
 
-      const raw = await redis.client.get(`sess:${sid}`);
-      expect(raw).toBeNull();
+    it('keeps the current successor valid after the previous grace expires', async () => {
+      const { sid, rt } = await service.create('user-current-after-grace');
+      const firstRotation = await service.rotate(sid, rt);
+      await redis.client.del(refreshRotationGraceKey(sid, sha256(rt)));
 
-      const members = await redis.client.smembers('user_sess:user-4');
-      expect(members).not.toContain(sid);
+      expect(await service.validate(sid, firstRotation!.rt)).toEqual({
+        userId: 'user-current-after-grace',
+      });
+      const secondRotation = await service.rotate(sid, firstRotation!.rt);
+      expect(secondRotation).not.toBeNull();
+      expect(await service.validate(sid, secondRotation!.rt)).toEqual({
+        userId: 'user-current-after-grace',
+      });
+    });
+
+    it('revokes the session for an arbitrary wrong rt', async () => {
+      const { sid } = await service.create('user-wrong-rt');
+
+      const result = await service.rotate(sid, 'arbitrary-wrong-rt');
+
+      expect(result).toBeNull();
+      expect(await redis.client.get(`sess:${sid}`)).toBeNull();
+      expect(
+        await redis.client.smembers('user_sess:user-wrong-rt'),
+      ).not.toContain(sid);
+    });
+
+    it('refreshes the session and user-session TTLs on rotation', async () => {
+      const { sid, rt } = await service.create('user-ttl');
+      await redis.client.expire(`sess:${sid}`, 60);
+      await redis.client.expire('user_sess:user-ttl', 60);
+
+      await service.rotate(sid, rt);
+
+      const thirtyDays = 30 * 24 * 60 * 60;
+      expect(await redis.client.ttl(`sess:${sid}`)).toBeGreaterThan(
+        thirtyDays - 60,
+      );
+      expect(await redis.client.ttl(`sess:${sid}`)).toBeLessThanOrEqual(
+        thirtyDays,
+      );
+      expect(await redis.client.ttl('user_sess:user-ttl')).toBeGreaterThan(
+        thirtyDays - 60,
+      );
+      expect(await redis.client.ttl('user_sess:user-ttl')).toBeLessThanOrEqual(
+        thirtyDays,
+      );
     });
 
     it('returns null when rotating an unknown sid', async () => {
@@ -204,24 +310,22 @@ describe('SessionService', () => {
     });
   });
 
-  // Doc 03 §12, case 13: reusing an already-rotated refresh token must 401
-  // AND fully destroy the session, so that a subsequent refresh attempt with
-  // the CURRENT (latest) rt also fails. This is the theft-detection
-  // guarantee that `AuthController.refresh` relies on (task 9).
+  // Outside the bounded concurrency grace window, reusing an already-rotated
+  // refresh token must fully destroy the session so that the current token
+  // also fails. This preserves theft detection without penalizing duplicate
+  // requests that race during a legitimate refresh.
   describe('refresh reuse / theft detection (end-to-end)', () => {
-    it('rejects the old rt after one rotation, and also rejects the current rt afterwards', async () => {
+    it('rejects the old rt outside grace, and also rejects the current rt afterwards', async () => {
       const { sid, rt: originalRt } = await service.create('user-9');
 
       const firstRotation = await service.rotate(sid, originalRt);
       expect(firstRotation).not.toBeNull();
       const currentRt = firstRotation!.rt;
+      await redis.client.del(refreshRotationGraceKey(sid, sha256(originalRt)));
 
-      // Simulate a stolen/replayed OLD refresh token being used again.
       const reuseAttempt = await service.rotate(sid, originalRt);
       expect(reuseAttempt).toBeNull();
 
-      // The session must now be fully destroyed: even the CURRENT
-      // (legitimately latest) rt no longer works.
       const afterTheftWithCurrentRt = await service.rotate(sid, currentRt);
       expect(afterTheftWithCurrentRt).toBeNull();
 
