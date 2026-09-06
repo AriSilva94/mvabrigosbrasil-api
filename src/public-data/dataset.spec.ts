@@ -16,6 +16,13 @@ describe('database dataset mapping', () => {
     expect(parseMonth(value)).toBe(month);
   });
 
+  it('uses local calendar components for timezone-aware timestamps', () => {
+    const timestamp = new Date('2024-01-01T00:30:00.000Z');
+
+    expect(parseYear(timestamp)).toBe(timestamp.getFullYear());
+    expect(parseMonth(timestamp)).toBe(timestamp.getMonth() + 1);
+  });
+
   it.each([
     ['12,5', 12.5],
     [' 7.25 ', 7.25],
@@ -26,6 +33,7 @@ describe('database dataset mapping', () => {
   });
 
   it('preserves the frontend dataset shapes, lookup, hash, years and states', () => {
+    const secondCreatedAt = new Date('2022-08-01T00:00:00.000Z');
     const shelterRows = [
       {
         id: 'shelter-a',
@@ -43,7 +51,7 @@ describe('database dataset mapping', () => {
         state: 'SP',
         shelterType: 'private',
         foundationDate: null,
-        createdAt: new Date('2022-08-01T00:00:00.000Z'),
+        createdAt: secondCreatedAt,
       },
     ];
     const dynamicsRows = [
@@ -87,8 +95,8 @@ describe('database dataset mapping', () => {
         id: 0,
         title: 'Abrigo B',
         postDate: '2022-08-01T00:00:00.000Z',
-        year: 2022,
-        month: 8,
+        year: secondCreatedAt.getFullYear(),
+        month: secondCreatedAt.getMonth() + 1,
         state: 'SP',
         type: 'Privado',
       },
@@ -121,5 +129,37 @@ describe('database dataset mapping', () => {
     expect(result.movements[0]?.id).toEqual(expect.any(Number));
     expect(result.years).toEqual([2024, 2022]);
     expect(result.states).toEqual(['RS', 'SP']);
+  });
+
+  it('keeps SQL date reference periods on their calendar month', () => {
+    const result = buildDatabaseDataset(
+      [],
+      [
+        {
+          id: 'dynamic-boundary',
+          shelterId: 'missing',
+          kind: 'abrigo',
+          dynamicType: 'dinamica',
+          referenceDate: new Date('2024-01-01T00:00:00.000Z'),
+          referencePeriod: '2024-01',
+          entradasDeAnimais: 0,
+          entradasDeGatos: 0,
+          adocoesCaes: 0,
+          adocoesGatos: 0,
+          devolucoesCaes: 0,
+          devolucoesGatos: 0,
+          eutanasiasCaes: 0,
+          eutanasiasGatos: 0,
+          mortesNaturaisCaes: 0,
+          mortesNaturaisGatos: 0,
+          retornoDeCaes: 0,
+          retornoDeGatos: 0,
+          retornoLocalCaes: 0,
+          retornoLocalGatos: 0,
+        },
+      ],
+    );
+
+    expect(result.movements[0]).toMatchObject({ year: 2024, month: 1 });
   });
 });

@@ -76,10 +76,16 @@ export type DatabaseDataset = {
 
 function parseDateParts(value: string | Date | null | undefined) {
   if (!value) return null;
-  const serialized = value instanceof Date ? value.toISOString() : value;
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(serialized);
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return { year: value.getFullYear(), month: value.getMonth() + 1 };
+  }
 
-  if (match) {
+  const serialized = value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(serialized);
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(serialized);
+
+  if (match && !hasExplicitTimezone) {
     const year = Number(match[1]);
     const month = Number(match[2]);
     const day = Number(match[3]);
@@ -95,7 +101,7 @@ function parseDateParts(value: string | Date | null | undefined) {
 
   const parsed = new Date(serialized);
   if (Number.isNaN(parsed.getTime())) return null;
-  return { year: parsed.getUTCFullYear(), month: parsed.getUTCMonth() + 1 };
+  return { year: parsed.getFullYear(), month: parsed.getMonth() + 1 };
 }
 
 export function parseYear(value: string | Date | null | undefined): number {
@@ -137,6 +143,10 @@ function serializeDate(value: Date): string {
   return value.toISOString();
 }
 
+function serializeDateOnly(value: Date | null): string | null {
+  return value?.toISOString().slice(0, 10) ?? null;
+}
+
 export function buildDatabaseDataset(
   shelterRows: ShelterDatasetRow[],
   dynamicsRows: DynamicsDatasetRow[],
@@ -175,8 +185,8 @@ export function buildDatabaseDataset(
       id,
       postType:
         dynamic.dynamicType === 'dinamica_lar' ? 'dinamica_lar' : 'dinamica',
-      year: parseYear(dynamic.referenceDate),
-      month: parseMonth(dynamic.referenceDate),
+      year: parseYear(serializeDateOnly(dynamic.referenceDate)),
+      month: parseMonth(serializeDateOnly(dynamic.referenceDate)),
       shelterId: shelter?.id ?? null,
       shelterState: shelter?.state,
       shelterType: shelter?.type,
