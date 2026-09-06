@@ -57,4 +57,24 @@ describe('dynamics schemas', () => {
     expect(details.fieldErrors.month).toBeDefined();
     expect(details.fieldErrors.dynamicType).toBeDefined();
   });
+
+  it('accepts the int4 maximum and rejects an overflowing metric', () => {
+    expect(
+      submitSchema.safeParse({
+        ...validPayload,
+        entries: 2_147_483_647,
+      }).success,
+    ).toBe(true);
+
+    const result = submitSchema.safeParse({
+      ...validPayload,
+      entries: 2_147_483_648,
+    });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(
+      result.error.flatten((issue) => issue.message).fieldErrors.entries,
+    ).toContain('Informe um valor menor ou igual a 2147483647.');
+  });
 });

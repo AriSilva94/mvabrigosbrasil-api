@@ -31,7 +31,8 @@ const numberField = z.preprocess(
   z
     .number()
     .int('Use apenas números inteiros.')
-    .min(0, 'Informe um valor maior ou igual a zero.'),
+    .min(0, 'Informe um valor maior ou igual a zero.')
+    .max(2_147_483_647, 'Informe um valor menor ou igual a 2147483647.'),
 );
 
 export const registerSchema = z.object({
