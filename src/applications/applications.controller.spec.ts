@@ -1,3 +1,5 @@
+import { HttpStatus } from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import type { Claims } from '../auth/jwt/token.service';
 import { ApplicationsController } from './applications.controller';
 import { ApplicationsService } from './applications.service';
@@ -26,5 +28,14 @@ describe('ApplicationsController', () => {
       applications: [],
     });
     expect(service.list).toHaveBeenCalledWith(claims, 'vacancy-1');
+  });
+
+  it('keeps POST apply on the legacy 200 status', () => {
+    const target = Object.getOwnPropertyDescriptor(
+      ApplicationsController.prototype,
+      'apply',
+    )?.value as object;
+
+    expect(Reflect.getMetadata(HTTP_CODE_METADATA, target)).toBe(HttpStatus.OK);
   });
 });

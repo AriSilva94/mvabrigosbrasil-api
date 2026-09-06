@@ -1,4 +1,5 @@
-import { INestApplication } from '@nestjs/common';
+import { HttpStatus, INestApplication } from '@nestjs/common';
+import { HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import type { NextFunction, Request, Response } from 'express';
 import request from 'supertest';
@@ -163,5 +164,14 @@ describe('VacanciesController', () => {
         methodTarget(VacanciesController.prototype, 'remove'),
       ),
     ).toBe(true);
+  });
+
+  it('keeps POST /vacancies on the legacy 200 status', () => {
+    expect(
+      Reflect.getMetadata(
+        HTTP_CODE_METADATA,
+        methodTarget(VacanciesController.prototype, 'create'),
+      ),
+    ).toBe(HttpStatus.OK);
   });
 });

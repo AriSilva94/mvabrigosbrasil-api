@@ -4,6 +4,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   Put,
@@ -37,6 +39,7 @@ export class VacanciesController {
   }
 
   @Post()
+  @HttpCode(HttpStatus.OK)
   @RequireTeamActive()
   @UseGuards(TeamActiveGuard)
   create(@CurrentUser() claims: Claims, @Body() body: unknown) {

@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Post } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user';
 import type { Claims } from '../auth/jwt/token.service';
 import { ApplicationsService } from './applications.service';
@@ -8,6 +15,7 @@ export class ApplicationsController {
   constructor(private readonly service: ApplicationsService) {}
 
   @Post('apply')
+  @HttpCode(HttpStatus.OK)
   apply(@CurrentUser() claims: Claims, @Param('id') id: string) {
     return this.service.apply(claims, id);
   }
