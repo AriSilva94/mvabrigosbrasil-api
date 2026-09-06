@@ -452,6 +452,13 @@ describe('SheltersService', () => {
     );
   });
 
+  it('getMyShelterHistory rejects very large offsets before querying history', async () => {
+    await expect(
+      service.getMyShelterHistory(userId, 50, 1_000_000),
+    ).rejects.toThrow(BadRequestException);
+    expect(prisma.shelter.findUnique).not.toHaveBeenCalled();
+  });
+
   it('checkAddress filters active shelters by CEP and excludes the current profile', async () => {
     prisma.shelter.findMany.mockResolvedValue([
       {

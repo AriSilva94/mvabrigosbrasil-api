@@ -70,6 +70,7 @@ export type ValidateProfileResult = {
 
 type ValidationRecord = Record<string, unknown>;
 const MAX_HISTORY_LIMIT = 100;
+const MAX_HISTORY_OFFSET = 10_000;
 
 export function isFieldEmpty(value: unknown): boolean {
   if (value === null || value === undefined) return true;
@@ -189,7 +190,8 @@ function normalizePagination(limit: number, offset: number) {
     !Number.isInteger(limit) ||
     !Number.isInteger(offset) ||
     limit < 1 ||
-    offset < 0
+    offset < 0 ||
+    offset > MAX_HISTORY_OFFSET
   ) {
     throw new BadRequestException('Parâmetros de paginação inválidos');
   }
