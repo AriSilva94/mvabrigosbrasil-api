@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Claims } from '../auth/jwt/token.service';
 import { hasChanges } from '../common/utils/diff';
-import { stripIdSuffix } from '../common/utils/slug';
+import { generateVolunteerSlug, stripIdSuffix } from '../common/utils/slug';
 import type { Prisma, Volunteer } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -87,18 +87,34 @@ export class VolunteersService {
     }
 
     const data = mapVolunteerProfileToDb(claims.sub, input);
-    if (existing && !hasChanges(mapVolunteerToComparable(existing), data)) {
+    if (
+      existing?.slug &&
+      !hasChanges(mapVolunteerToComparable(existing), data)
+    ) {
       return { ok: true, volunteer: mapDbToFormData(existing) };
     }
 
     let saved: Volunteer;
     try {
-      saved = existing
-        ? await this.prisma.volunteer.update({
-            where: { id: existing.id },
-            data,
-          })
-        : await this.prisma.volunteer.create({ data });
+      if (existing) {
+        saved = await this.prisma.volunteer.update({
+          where: { id: existing.id },
+          data: existing.slug
+            ? data
+            : {
+                ...data,
+                slug: generateVolunteerSlug(data.name, existing.id),
+              },
+        });
+      } else {
+        saved = await this.prisma.$transaction(async (tx) => {
+          const created = await tx.volunteer.create({ data });
+          return tx.volunteer.update({
+            where: { id: created.id },
+            data: { slug: generateVolunteerSlug(created.name, created.id) },
+          });
+        });
+      }
     } catch (error) {
       this.logger.error('volunteers POST me: erro ao salvar cadastro', error);
       throw new InternalServerErrorException({

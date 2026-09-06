@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Post,
   Query,
   UseGuards,
@@ -30,6 +32,7 @@ export class SheltersController {
   }
 
   @Post('shelters/me')
+  @HttpCode(HttpStatus.OK)
   @RequireTeamActive()
   @UseGuards(TeamActiveGuard)
   upsertMyShelter(@CurrentUser() user: Claims, @Body() body: unknown) {
@@ -44,6 +47,7 @@ export class SheltersController {
   }
 
   @Post('shelters/me/deactivate')
+  @HttpCode(HttpStatus.OK)
   @RequireTeamActive()
   @UseGuards(TeamActiveGuard)
   deactivateMyShelter(@CurrentUser() user: Claims) {

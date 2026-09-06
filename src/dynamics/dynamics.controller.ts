@@ -4,6 +4,8 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Post,
   Query,
   UseGuards,
@@ -67,6 +69,7 @@ export class DynamicsController {
   }
 
   @Post()
+  @HttpCode(HttpStatus.OK)
   @RequireTeamActive()
   @UseGuards(TeamActiveGuard)
   saveDynamics(@CurrentUser() claims: Claims, @Body() body: unknown) {

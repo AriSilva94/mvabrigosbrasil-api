@@ -210,7 +210,9 @@ export class AdminService {
     memberWpUserId: bigint,
     shelterIds: string[],
   ): Promise<void> {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(${memberWpUserId})`;
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(${memberWpUserId})::text
+    `;
 
     const uniqueShelterIds = [...new Set(shelterIds)].sort();
     for (const shelterId of uniqueShelterIds) {

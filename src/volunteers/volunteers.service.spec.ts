@@ -86,6 +86,7 @@ const expectedForm = {
 };
 
 type PrismaMock = {
+  $transaction: jest.Mock;
   user: { findUnique: jest.Mock };
   volunteer: {
     findFirst: jest.Mock;
@@ -96,7 +97,8 @@ type PrismaMock = {
 };
 
 function createPrismaMock(): PrismaMock {
-  return {
+  const prisma = {
+    $transaction: jest.fn(),
     user: { findUnique: jest.fn() },
     volunteer: {
       findFirst: jest.fn(),
@@ -105,6 +107,10 @@ function createPrismaMock(): PrismaMock {
       findMany: jest.fn(),
     },
   };
+  prisma.$transaction.mockImplementation(
+    (callback: (tx: PrismaMock) => unknown) => callback(prisma),
+  );
+  return prisma;
 }
 
 describe('VolunteersService private profile', () => {
@@ -197,7 +203,10 @@ describe('VolunteersService private profile', () => {
 
   it('returns the existing form without writing when nothing changed', async () => {
     prisma.user.findUnique.mockResolvedValue({ id: claims.sub });
-    prisma.volunteer.findFirst.mockResolvedValue(volunteer);
+    prisma.volunteer.findFirst.mockResolvedValue({
+      ...volunteer,
+      slug: 'maria-silva',
+    });
 
     await expect(service.saveMe(claims, payload)).resolves.toEqual({
       ok: true,
@@ -207,10 +216,34 @@ describe('VolunteersService private profile', () => {
     expect(prisma.volunteer.update).not.toHaveBeenCalled();
   });
 
-  it('creates a volunteer and persists both D4 fields', async () => {
+  it('backfills a missing slug even when the profile fields did not change', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: claims.sub });
+    prisma.volunteer.findFirst.mockResolvedValue(volunteer);
+    prisma.volunteer.update.mockResolvedValue({
+      ...volunteer,
+      slug: 'maria-silva-22222222',
+    });
+
+    await expect(service.saveMe(claims, payload)).resolves.toEqual({
+      ok: true,
+      volunteer: expectedForm,
+    });
+    expect(prisma.volunteer.update).toHaveBeenCalledWith({
+      where: { id: volunteer.id },
+      data: expect.objectContaining({
+        slug: 'maria-silva-22222222',
+      }) as unknown,
+    });
+  });
+
+  it('creates a volunteer, persists both D4 fields, and stores its public slug', async () => {
     prisma.user.findUnique.mockResolvedValue({ id: claims.sub });
     prisma.volunteer.findFirst.mockResolvedValue(null);
     prisma.volunteer.create.mockResolvedValue(volunteer);
+    prisma.volunteer.update.mockResolvedValue({
+      ...volunteer,
+      slug: 'maria-silva-22222222',
+    });
 
     await expect(service.saveMe(claims, payload)).resolves.toEqual({
       ok: true,
@@ -224,6 +257,11 @@ describe('VolunteersService private profile', () => {
         isPublic: true,
       }) as unknown,
     });
+    expect(prisma.volunteer.update).toHaveBeenCalledWith({
+      where: { id: volunteer.id },
+      data: { slug: 'maria-silva-22222222' },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
   });
 
   it('updates strictly by existing id and persists both D4 fields', async () => {
