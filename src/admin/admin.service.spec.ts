@@ -3,6 +3,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { PrismaService } from '../prisma/prisma.service';
+import type { CacheInvalidationService } from '../redis/cache-invalidation.service';
 import { AdminService } from './admin.service';
 
 type TxMock = {
@@ -35,6 +36,7 @@ describe('AdminService', () => {
     shelter: { findMany: jest.fn(), update: jest.fn() },
     $transaction: jest.fn(),
   };
+  const cacheInvalidation = { invalidatePublicData: jest.fn() };
   let service: AdminService;
 
   beforeEach(() => {
@@ -45,7 +47,11 @@ describe('AdminService', () => {
     tx.teamMembership.deleteMany.mockResolvedValue({ count: 0 });
     tx.teamMembership.createMany.mockResolvedValue({ count: 0 });
     tx.$queryRaw.mockResolvedValue([]);
-    service = new AdminService(prisma as unknown as PrismaService);
+    cacheInvalidation.invalidatePublicData.mockResolvedValue(undefined);
+    service = new AdminService(
+      prisma as unknown as PrismaService,
+      cacheInvalidation as unknown as CacheInvalidationService,
+    );
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -145,6 +151,7 @@ describe('AdminService', () => {
         },
       ],
     });
+    expect(cacheInvalidation.invalidatePublicData).toHaveBeenCalledTimes(1);
   });
 
   it.each([

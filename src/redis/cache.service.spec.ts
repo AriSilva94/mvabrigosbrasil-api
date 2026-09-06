@@ -15,6 +15,8 @@ function createRedisMock() {
     client: {
       get: jest.fn(),
       set: jest.fn(),
+      eval: jest.fn(),
+      incr: jest.fn(),
       scan: jest.fn(),
       del: jest.fn(),
     },
@@ -37,8 +39,8 @@ describe('CacheService', () => {
 
   it('produces and stores a cache miss with SET EX', async () => {
     const redis = createRedisMock();
-    redis.client.get.mockResolvedValue(null);
-    redis.client.set.mockResolvedValue('OK');
+    redis.client.get.mockResolvedValueOnce(null).mockResolvedValueOnce('3');
+    redis.client.eval.mockResolvedValue(1);
     const producer = jest.fn().mockResolvedValue({ value: 2 });
     const service = new CacheService(redis as unknown as RedisService);
 
@@ -46,12 +48,37 @@ describe('CacheService', () => {
       service.getOrSet('public:test', 900, producer),
     ).resolves.toEqual({ value: 2 });
     expect(producer).toHaveBeenCalledTimes(1);
-    expect(redis.client.set).toHaveBeenCalledWith(
+    expect(redis.client.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      2,
+      'cache:v1:generation:public',
       'cache:v1:public:test',
+      '3',
       JSON.stringify({ value: 2 }),
-      'EX',
-      900,
+      '900',
     );
+  });
+
+  it('does not restore a stale value when invalidation changes the generation', async () => {
+    const redis = createRedisMock();
+    redis.client.get.mockResolvedValueOnce(null).mockResolvedValueOnce('7');
+    redis.client.eval.mockResolvedValue(0);
+    const producer = jest.fn().mockResolvedValue({ stale: true });
+    const service = new CacheService(redis as unknown as RedisService);
+
+    await expect(
+      service.getOrSet('public:test', 900, producer),
+    ).resolves.toEqual({ stale: true });
+    expect(redis.client.eval).toHaveBeenCalledWith(
+      expect.any(String),
+      2,
+      'cache:v1:generation:public',
+      'cache:v1:public:test',
+      '7',
+      JSON.stringify({ stale: true }),
+      '900',
+    );
+    expect(redis.client.set).not.toHaveBeenCalled();
   });
 
   it('fails open when Redis GET or SET fails', async () => {
@@ -69,8 +96,10 @@ describe('CacheService', () => {
 
   it('treats malformed cached JSON as a miss', async () => {
     const redis = createRedisMock();
-    redis.client.get.mockResolvedValue('{invalid');
-    redis.client.set.mockResolvedValue('OK');
+    redis.client.get
+      .mockResolvedValueOnce('{invalid')
+      .mockResolvedValueOnce('0');
+    redis.client.eval.mockResolvedValue(1);
     const producer = jest.fn().mockResolvedValue(['fresh']);
     const service = new CacheService(redis as unknown as RedisService);
 
@@ -86,10 +115,14 @@ describe('CacheService', () => {
       .mockResolvedValueOnce(['7', ['cache:v1:public:a', 'cache:v1:public:b']])
       .mockResolvedValueOnce(['0', ['cache:v1:public:c']]);
     redis.client.del.mockResolvedValue(1);
+    redis.client.incr.mockResolvedValue(1);
     const service = new CacheService(redis as unknown as RedisService);
 
     await service.del('public:*');
 
+    expect(redis.client.incr).toHaveBeenCalledWith(
+      'cache:v1:generation:public',
+    );
     expect(redis.client.scan).toHaveBeenNthCalledWith(
       1,
       '0',

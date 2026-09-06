@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheInvalidationService } from '../redis/cache-invalidation.service';
 
 const MAX_SYNTHETIC_ID_ATTEMPTS = 5;
 
@@ -49,7 +50,10 @@ function shelterDto(shelter: {
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cacheInvalidation: CacheInvalidationService,
+  ) {}
 
   async listManagers() {
     const managers = await this.prisma.user.findMany({
@@ -123,45 +127,55 @@ export class AdminService {
     const memberWpUserId = BigInt(manager.wpUserId);
     for (let attempt = 0; attempt < MAX_SYNTHETIC_ID_ATTEMPTS; attempt += 1) {
       try {
-        await this.prisma.$transaction(async (tx) => {
-          await this.lockReplacement(tx, memberWpUserId, shelterIds);
+        const assignedSyntheticId = await this.prisma.$transaction(
+          async (tx) => {
+            await this.lockReplacement(tx, memberWpUserId, shelterIds);
 
-          const shelters = await tx.shelter.findMany({
-            where: { id: { in: shelterIds } },
-            select: { id: true, wpPostId: true },
-          });
-          const wpPostIds: number[] = [];
-          for (const shelter of shelters) {
-            if (shelter.wpPostId !== null) {
-              wpPostIds.push(shelter.wpPostId);
-              continue;
-            }
-            wpPostIds.push(await this.assignSyntheticWpPostId(tx, shelter.id));
-          }
-
-          try {
-            await tx.teamMembership.deleteMany({
-              where: { memberWpUserId, role: 'manager' },
+            const shelters = await tx.shelter.findMany({
+              where: { id: { in: shelterIds } },
+              select: { id: true, wpPostId: true },
             });
-          } catch {
-            throw new MembershipWriteError('delete');
-          }
+            const wpPostIds: number[] = [];
+            let assignedSyntheticId = false;
+            for (const shelter of shelters) {
+              if (shelter.wpPostId !== null) {
+                wpPostIds.push(shelter.wpPostId);
+                continue;
+              }
+              wpPostIds.push(
+                await this.assignSyntheticWpPostId(tx, shelter.id),
+              );
+              assignedSyntheticId = true;
+            }
 
-          if (wpPostIds.length) {
             try {
-              await tx.teamMembership.createMany({
-                data: wpPostIds.map((abrigoPostId) => ({
-                  memberWpUserId,
-                  abrigoPostId: BigInt(abrigoPostId),
-                  role: 'manager',
-                  status: 'active',
-                })),
+              await tx.teamMembership.deleteMany({
+                where: { memberWpUserId, role: 'manager' },
               });
             } catch {
-              throw new MembershipWriteError('insert');
+              throw new MembershipWriteError('delete');
             }
-          }
-        });
+
+            if (wpPostIds.length) {
+              try {
+                await tx.teamMembership.createMany({
+                  data: wpPostIds.map((abrigoPostId) => ({
+                    memberWpUserId,
+                    abrigoPostId: BigInt(abrigoPostId),
+                    role: 'manager',
+                    status: 'active',
+                  })),
+                });
+              } catch {
+                throw new MembershipWriteError('insert');
+              }
+            }
+            return assignedSyntheticId;
+          },
+        );
+        if (assignedSyntheticId) {
+          await this.cacheInvalidation.invalidatePublicData();
+        }
         return { success: true as const };
       } catch (error) {
         if (
