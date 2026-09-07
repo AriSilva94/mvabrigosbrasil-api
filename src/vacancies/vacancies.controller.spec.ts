@@ -8,6 +8,7 @@ import type { Claims } from '../auth/jwt/token.service';
 import { TEAM_ACTIVE_KEY } from '../common/decorators/team-active';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { TeamActiveGuard } from '../common/guards/team-active.guard';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   PublicVacanciesController,
   VacanciesController,
@@ -59,6 +60,10 @@ describe('VacanciesController', () => {
       controllers: [VacanciesController, PublicVacanciesController],
       providers: [
         { provide: VacanciesService, useValue: service },
+        {
+          provide: PrismaService,
+          useValue: { user: { findUnique: jest.fn() } },
+        },
         TeamActiveGuard,
       ],
     }).compile();

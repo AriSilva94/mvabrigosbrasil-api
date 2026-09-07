@@ -287,7 +287,7 @@ describe('Data domains E2E - team and admin (slice C)', () => {
       .expect({ ok: true });
   });
 
-  it('disabling a team user revokes its real Redis session and refresh token', async () => {
+  it('blocks a pre-disable access token and revokes the real refresh session', async () => {
     const login = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({
@@ -295,11 +295,21 @@ describe('Data domains E2E - team and admin (slice C)', () => {
         password: PASSWORD,
       })
       .expect(200);
+    const accessToken = extractCookie(
+      login.headers['set-cookie'] as unknown as CookieJar,
+      'mv_at',
+    );
     const refreshCookie = extractCookie(
       login.headers['set-cookie'] as unknown as CookieJar,
       'mv_rt',
     );
+    expect(accessToken).toBeTruthy();
     expect(refreshCookie).toBeTruthy();
+    await expect(tokens.verify(accessToken!)).resolves.toMatchObject({
+      sub: ids.teamMember,
+      isTeamOnly: true,
+      teamDisabled: false,
+    });
     const sid = refreshCookie!.slice(0, refreshCookie!.indexOf('.'));
     sessionIds.add(sid);
     expect(await redis.client.get(`sess:${sid}`)).not.toBeNull();
@@ -320,6 +330,12 @@ describe('Data domains E2E - team and admin (slice C)', () => {
     expect(
       await redis.client.sismember(`user_sess:${ids.teamMember}`, sid),
     ).toBe(0);
+    await request(app.getHttpServer())
+      .post('/api/v1/vacancies')
+      .set('Cookie', `mv_at=${accessToken}`)
+      .send({})
+      .expect(403)
+      .expect({ error: 'Acesso negado' });
     await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
       .set('Cookie', `mv_rt=${refreshCookie}`)

@@ -10,6 +10,7 @@ import request from 'supertest';
 import type { Claims } from '../auth/jwt/token.service';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 import { TeamActiveGuard } from '../common/guards/team-active.guard';
+import { PrismaService } from '../prisma/prisma.service';
 import { DynamicsController } from './dynamics.controller';
 import { DynamicsService } from './dynamics.service';
 
@@ -66,6 +67,10 @@ describe('DynamicsController', () => {
       controllers: [DynamicsController],
       providers: [
         { provide: DynamicsService, useValue: dynamicsService },
+        {
+          provide: PrismaService,
+          useValue: { user: { findUnique: jest.fn() } },
+        },
         TeamActiveGuard,
       ],
     }).compile();
