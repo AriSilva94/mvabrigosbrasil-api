@@ -134,7 +134,9 @@ export class VolunteersService {
       return { volunteers: volunteers.map(mapPublicVolunteerCard) };
     } catch (error) {
       this.logger.error('volunteers GET: erro ao buscar voluntários', error);
-      return { volunteers: [] };
+      throw new InternalServerErrorException({
+        error: 'Erro ao buscar voluntários',
+      });
     }
   }
 
@@ -170,7 +172,13 @@ export class VolunteersService {
       }
     }
 
-    if (queryFailed || !row) {
+    if (!row && queryFailed) {
+      throw new InternalServerErrorException({
+        error: 'Erro ao buscar voluntário',
+      });
+    }
+
+    if (!row) {
       throw new NotFoundException({ error: 'Voluntário não encontrado' });
     }
 

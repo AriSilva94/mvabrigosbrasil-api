@@ -342,10 +342,15 @@ describe('VolunteersService public data', () => {
     });
   });
 
-  it('logs public card query failures and returns an empty list', async () => {
+  it('reports public card query failures instead of masking them as an empty list', async () => {
     prisma.volunteer.findMany.mockRejectedValue(new Error('db'));
 
-    await expect(service.listPublic()).resolves.toEqual({ volunteers: [] });
+    await expect(service.listPublic()).rejects.toEqual(
+      expect.objectContaining({
+        status: 500,
+        response: { error: 'Erro ao buscar voluntários' },
+      }),
+    );
   });
 
   it('rejects an empty public slug without querying', async () => {
@@ -417,14 +422,15 @@ describe('VolunteersService public data', () => {
     );
   });
 
-  it('logs exact and fallback query errors and returns 404', async () => {
+  it('reports exact and fallback query errors instead of returning 404', async () => {
     prisma.volunteer.findFirst
       .mockRejectedValueOnce(new Error('exact db error'))
       .mockRejectedValueOnce(new Error('fallback db error'));
 
     await expect(service.getPublic('maria-silva-123e4567')).rejects.toEqual(
       expect.objectContaining({
-        response: { error: 'Voluntário não encontrado' },
+        status: 500,
+        response: { error: 'Erro ao buscar voluntário' },
       }),
     );
     expect(prisma.volunteer.findFirst).toHaveBeenCalledTimes(2);
