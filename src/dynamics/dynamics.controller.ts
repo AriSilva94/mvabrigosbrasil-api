@@ -18,6 +18,7 @@ import { DynamicsService } from './dynamics.service';
 import { deleteSchema, submitSchema } from './schemas/dynamics.schema';
 
 const PRISMA_INT_MAX = 2_147_483_647;
+const PRISMA_INT_MIN = -2_147_483_648;
 
 function invalidPayload(details: unknown): BadRequestException {
   return new BadRequestException({ error: 'invalid_payload', details });
@@ -25,7 +26,7 @@ function invalidPayload(details: unknown): BadRequestException {
 
 function parseShelterWpPostId(value?: string): number | null {
   if (value === undefined || value === '') return null;
-  if (!/^\d+$/.test(value)) {
+  if (!/^-?\d+$/.test(value)) {
     throw invalidPayload({
       formErrors: [],
       fieldErrors: { shelter_id: ['shelter_id inválido'] },
@@ -33,7 +34,12 @@ function parseShelterWpPostId(value?: string): number | null {
   }
 
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > PRISMA_INT_MAX) {
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed === 0 ||
+    parsed < PRISMA_INT_MIN ||
+    parsed > PRISMA_INT_MAX
+  ) {
     throw invalidPayload({
       formErrors: [],
       fieldErrors: { shelter_id: ['shelter_id inválido'] },

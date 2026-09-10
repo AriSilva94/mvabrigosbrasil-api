@@ -109,7 +109,7 @@ describe('DynamicsController', () => {
     );
   });
 
-  it.each(['abc', '12abc', '2147483648'])(
+  it.each(['abc', '12abc', '0', '2147483648', '-2147483649'])(
     'rejects invalid shelter_id %s without calling Prisma-facing service code',
     async (shelterId) => {
       const response = await request(
@@ -121,6 +121,33 @@ describe('DynamicsController', () => {
       expect(response.body).toMatchObject({ error: 'invalid_payload' });
       expect(response.body).toHaveProperty('details');
       expect(dynamicsService.getDynamics).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['abc', '0', '2147483648', '-2147483649'])(
+    'rejects invalid summary shelter_id %s without calling service code',
+    async (shelterId) => {
+      await request(app.getHttpServer() as Parameters<typeof request>[0])
+        .get(`/dynamics/summary?shelter_id=${shelterId}`)
+        .expect(400);
+
+      expect(dynamicsService.getSummary).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([-2_147_483_648, 2_147_483_647])(
+    'accepts int32 boundary shelter_id %s on GET /dynamics',
+    async (shelterId) => {
+      dynamicsService.getDynamics.mockResolvedValue({ sections: [] });
+
+      await request(app.getHttpServer() as Parameters<typeof request>[0])
+        .get(`/dynamics?shelter_id=${shelterId}`)
+        .expect(200);
+
+      expect(dynamicsService.getDynamics).toHaveBeenCalledWith(
+        activeClaims,
+        shelterId,
+      );
     },
   );
 
@@ -203,10 +230,10 @@ describe('DynamicsController', () => {
     const response = await request(
       app.getHttpServer() as Parameters<typeof request>[0],
     )
-      .get('/dynamics/summary?shelter_id=123')
+      .get('/dynamics/summary?shelter_id=-123')
       .expect(200);
 
     expect(response.body).toEqual(result);
-    expect(dynamicsService.getSummary).toHaveBeenCalledWith(activeClaims, 123);
+    expect(dynamicsService.getSummary).toHaveBeenCalledWith(activeClaims, -123);
   });
 });
