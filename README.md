@@ -5,9 +5,9 @@ replace Supabase as the production data layer: Postgres via Prisma, Redis for
 caching/session support, environment validation, health checks, and the
 legacy WordPress password-verification path needed to migrate existing users.
 
-This is the **foundation** only. Auth endpoints (login, refresh, cookies,
-`ValidationPipe`/`class-validator` wiring) are a later phase and are not part
-of this branch.
+Authentication endpoints, rotating cookie sessions, legacy WordPress migration
+and the domain APIs are implemented. Passwords remain bcrypt-compatible with
+Supabase; official and previous custom WordPress hashes are both accepted.
 
 ## Prerequisites
 
@@ -82,15 +82,19 @@ npm run test:cov  # coverage
 
 ## 6. Data import (Supabase → NestJS)
 
-To import production data from Supabase into the target NestJS database, follow the complete procedure in [`docs/IMPORT.md`](docs/IMPORT.md). The process brings up a disposable Postgres mirror, restores the production dump, applies the target schema, runs the orchestrator to copy data, and verifies integrity across 15 tables and 40+ automated checks. Imports are idempotent (re-runnable), though changes made to Supabase after the 2026-09-04 dump are not synced; a delta step with `ON CONFLICT DO UPDATE` is required for the real production cutover (Phase 2).
+Follow [`docs/IMPORT.md`](docs/IMPORT.md) for initial import and final cutover.
+The initial importer is insert-only. `npm run import:sync -- --dry-run`
+previews complete snapshot synchronization, including password changes and
+deletions. Applying requires explicit connection URLs and `--apply --maintenance`;
+it atomically replaces the 15 migrated tables with the authoritative snapshot.
 
 ## 7. Docker build targets
 
-The `Dockerfile` has two relevant targets (the default `docker build .`
+The `Dockerfile` has three relevant targets (the default `docker build .`
 resolves to `runner`):
 
 - `runner` — the application image. Built and run by the `api` service in
-  `docker-compose.yml`.
+  `docker-compose.yml`. Its entrypoint applies migrations before starting NestJS.
 - `migrator` — runs `prisma migrate deploy` against the configured
   `DATABASE_URL` and exits. Build explicitly with:
 
@@ -102,10 +106,17 @@ resolves to `runner`):
   starts, so migrations are always applied before the app boots when using
   `docker compose up`.
 
+- `tools` — import and validation commands, built separately and never published as the application runtime.
+
 ## Notes
 
-- `GET /api/v1/health` returns `200` with `{"status","db","redis"}`. Status
+For the full production-image stack and migration rehearsal in Docker Desktop,
+see [docs/DOCKER-LOCAL.md](docs/DOCKER-LOCAL.md).
+
+- `GET /api/v1/health` returns `200` with `{"status","db","redis","revision"}`. Status
   is `degraded` (not a non-2xx code) when a dependency is down, so container
   health checks don't restart an app that is still serving traffic.
 - The app boots successfully even if Redis is unreachable at startup; Redis
   reconnects on its own once available.
+
+Deploy e verificações de segurança: [DEPLOY-DOKPLOY.md](docs/DEPLOY-DOKPLOY.md).
