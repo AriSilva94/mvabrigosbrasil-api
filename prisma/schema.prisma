@@ -53,12 +53,20 @@ model User {
   createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  creator        User?            @relation("TeamCreator", fields: [creatorProfileId], references: [id], onDelete: SetNull)
-  teamMembers    User[]           @relation("TeamCreator")
-  shelters       Shelter[]
-  volunteers     Volunteer[]
-  shelterHistory ShelterHistory[] @relation("HistoryProfile")
-  historyChanges ShelterHistory[] @relation("HistoryChangedBy")
+  creator                User?             @relation("TeamCreator", fields: [creatorProfileId], references: [id], onDelete: SetNull)
+  teamMembers            User[]            @relation("TeamCreator")
+  shelters               Shelter[]
+  volunteers             Volunteer[]
+  shelterHistory         ShelterHistory[]  @relation("HistoryProfile")
+  historyChanges         ShelterHistory[]  @relation("HistoryChangedBy")
+  chatThreadsAsVolunteer ChatThread[]      @relation("ChatThreadVolunteerProfile")
+  chatThreadsAsShelter   ChatThread[]      @relation("ChatThreadShelterProfile")
+  chatParticipations     ChatParticipant[]
+  chatMessages           ChatMessage[]
+  chatBlocksMade         ChatBlock[]       @relation("ChatBlocker")
+  chatBlocksReceived     ChatBlock[]       @relation("ChatBlocked")
+  chatReportsMade        ChatReport[]      @relation("ChatReporter")
+  chatReportsReceived    ChatReport[]      @relation("ChatReported")
 
   @@index([role])
   @@index([creatorProfileId])
@@ -106,6 +114,7 @@ model Shelter {
   vacancies         Vacancy[]
   history           ShelterHistory[]
   shelterVolunteers ShelterVolunteer[]
+  chatThreads       ChatThread[]
 
   @@unique([profileId]) // upsert onConflict profile_id (api/shelter-profile)
   @@index([state, city])
@@ -142,6 +151,7 @@ model Volunteer {
 
   owner        User?                @relation(fields: [ownerProfileId], references: [id], onDelete: SetNull)
   applications VacancyApplication[]
+  chatThreads  ChatThread[]
   shelterLinks ShelterVolunteer[]
 
   @@index([ownerProfileId])
@@ -175,6 +185,7 @@ model Vacancy {
 
   shelter      Shelter?             @relation(fields: [shelterId], references: [id], onDelete: SetNull)
   applications VacancyApplication[]
+  chatThreads  ChatThread[]
 
   @@index([shelterId])
   @@index([status])
@@ -191,8 +202,9 @@ model VacancyApplication {
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  vacancy   Vacancy   @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
-  volunteer Volunteer @relation(fields: [volunteerId], references: [id], onDelete: Cascade)
+  vacancy     Vacancy      @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+  volunteer   Volunteer    @relation(fields: [volunteerId], references: [id], onDelete: Cascade)
+  chatThreads ChatThread[]
 
   @@unique([vacancyId, volunteerId]) // erro 23505 → 409 "Você já se candidatou a esta vaga"
   @@index([vacancyId, appliedAt(sort: Desc)])
@@ -393,4 +405,110 @@ model DeletionFlag {
 
   @@index([status, tableName], map: "idx_deletion_flags_status") // compound em produção; unique parcial (table_name, record_id) WHERE status='pending' acrescentado à mão na migração
   @@map("deletion_flags")
+}
+
+// ---------- Chat ----------
+// Espelha scripts/migrations/sql/05,08,09 do front (PR #96), com FKs para
+// users no lugar de profiles. CHECKs vivem na migration.
+model ChatThread {
+  id                 String   @id @default(uuid()) @db.Uuid
+  vacancyId          String   @map("vacancy_id") @db.Uuid
+  volunteerProfileId String   @map("volunteer_profile_id") @db.Uuid
+  shelterProfileId   String   @map("shelter_profile_id") @db.Uuid
+  shelterId          String   @map("shelter_id") @db.Uuid
+  volunteerId        String   @map("volunteer_id") @db.Uuid
+  applicationId      String?  @map("application_id") @db.Uuid
+  status             String   @default("active") // active | archived | closed
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz
+
+  vacancy          Vacancy             @relation(fields: [vacancyId], references: [id], onDelete: Cascade)
+  volunteerProfile User                @relation("ChatThreadVolunteerProfile", fields: [volunteerProfileId], references: [id], onDelete: Cascade)
+  shelterProfile   User                @relation("ChatThreadShelterProfile", fields: [shelterProfileId], references: [id], onDelete: Cascade)
+  shelter          Shelter             @relation(fields: [shelterId], references: [id], onDelete: Cascade)
+  volunteer        Volunteer           @relation(fields: [volunteerId], references: [id], onDelete: Cascade)
+  application      VacancyApplication? @relation(fields: [applicationId], references: [id], onDelete: SetNull)
+  participants     ChatParticipant[]
+  messages         ChatMessage[]
+  reports          ChatReport[]
+
+  @@unique([vacancyId, volunteerProfileId])
+  @@index([volunteerProfileId, status, updatedAt(sort: Desc)])
+  @@index([shelterProfileId, status, updatedAt(sort: Desc)])
+  @@index([vacancyId])
+  @@map("chat_threads")
+}
+
+model ChatParticipant {
+  id         String   @id @default(uuid()) @db.Uuid
+  threadId   String   @map("thread_id") @db.Uuid
+  profileId  String   @map("profile_id") @db.Uuid
+  role       String // volunteer | shelter
+  lastReadAt DateTime @default(now()) @map("last_read_at") @db.Timestamptz
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  thread  ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  profile User       @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, profileId])
+  @@index([profileId, isActive])
+  @@map("chat_participants")
+}
+
+model ChatMessage {
+  id          String    @id @default(uuid()) @db.Uuid
+  threadId    String    @map("thread_id") @db.Uuid
+  senderId    String    @map("sender_id") @db.Uuid
+  content     String
+  messageType String    @default("text") @map("message_type") // text | system
+  status      String    @default("sent") // sent | read
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz
+  editedAt    DateTime? @map("edited_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  thread  ChatThread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  sender  User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  reports ChatReport[]
+
+  @@index([threadId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([senderId])
+  @@map("chat_messages")
+}
+
+model ChatBlock {
+  id        String   @id @default(uuid()) @db.Uuid
+  blockerId String   @map("blocker_id") @db.Uuid
+  blockedId String   @map("blocked_id") @db.Uuid
+  reason    String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  blocker User @relation("ChatBlocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("ChatBlocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("chat_blocks")
+}
+
+model ChatReport {
+  id             String   @id @default(uuid()) @db.Uuid
+  reporterId     String   @map("reporter_id") @db.Uuid
+  threadId       String?  @map("thread_id") @db.Uuid
+  messageId      String?  @map("message_id") @db.Uuid
+  reportedUserId String   @map("reported_user_id") @db.Uuid
+  reason         String
+  status         String   @default("pending") // pending | reviewed | dismissed | actioned
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  reporter     User         @relation("ChatReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser User         @relation("ChatReported", fields: [reportedUserId], references: [id], onDelete: Cascade)
+  thread       ChatThread?  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  message      ChatMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@unique([reporterId, messageId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("chat_reports")
 }
