@@ -6,8 +6,8 @@ Há somente dois ambientes, em cada repositório:
 
 | Branch | GitHub Environment | Tag GHCR | Destino |
 | --- | --- | --- | --- |
-| develop | develop | develop | Homologação |
-| main | main | latest | Produção |
+| develop | development | dev | Homologação |
+| main | production | latest | Produção |
 
 Cada imagem também recebe sha-<SHA completo>. O workflow pode ser acionado por push, Pull Request ou workflow_dispatch. Execuções manuais em outras branches são recusadas. PRs executam verificações e build/scan local, sem publicar nem acessar webhooks.
 
@@ -47,7 +47,7 @@ Essas URLs não devem conter credenciais. O build de publicação falha se a con
 
 ## Configuração no Dokploy
 
-Criar um serviço Docker Registry para o frontend e outro para o backend em cada ambiente. Usar as imagens ghcr.io/arisilva94/mvabrigosbrasil e ghcr.io/arisilva94/mvabrigosbrasil-api, com develop ou latest conforme a tabela. Autorizar leitura das imagens privadas com credencial de menor escopo possível. Desativar gatilhos de deploy que contornem o workflow e seu scan.
+Criar um serviço Docker Registry para o frontend e outro para o backend em cada ambiente. Usar as imagens ghcr.io/arisilva94/mvabrigosbrasil e ghcr.io/arisilva94/mvabrigosbrasil-api, com dev ou latest conforme a tabela. Autorizar leitura das imagens privadas com credencial de menor escopo possível. Desativar gatilhos de deploy que contornem o workflow e seu scan.
 
 Configurar no runtime do frontend:
 

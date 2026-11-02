@@ -156,7 +156,7 @@ jobs:
           images: ${{ steps.image.outputs.image }}
           tags: |
             type=sha,format=long,prefix=sha-
-            type=raw,value=develop,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=dev,enable=${{ github.ref_name == 'develop' }}
             type=raw,value=latest,enable=${{ github.ref_name == 'main' }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
         id: build
@@ -216,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$GITHUB_REF_NAME" in
-            develop) tag=develop ;;
+            develop) tag=dev ;;
             main) tag=latest ;;
             *) exit 1 ;;
           esac
