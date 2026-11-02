@@ -5,6 +5,7 @@ dist
 .env.*
 !.env.example
 coverage
+.tmp
 test
 *.spec.ts
 src/generated

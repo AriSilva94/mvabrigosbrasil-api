@@ -35,7 +35,7 @@ export function setAuthCookies(
   // Set refresh token cookie
   res.cookie('mv_rt', tokens.rt, {
     ...commonOptions,
-    path: '/api/v1/auth',
+    path: '/',
     maxAge: REFRESH_TOKEN_MAX_AGE_MS,
   });
 }
@@ -68,6 +68,6 @@ export function clearAuthCookies(
   // Clear refresh token cookie (must use same path as when set)
   res.clearCookie('mv_rt', {
     ...commonOptions,
-    path: '/api/v1/auth',
+    path: '/',
   });
 }

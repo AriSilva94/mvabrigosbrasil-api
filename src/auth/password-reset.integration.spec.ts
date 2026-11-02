@@ -49,7 +49,7 @@ describe('AuthService password reset (integration, real Redis)', () => {
   let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
   let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
-  let prisma: { user: { update: jest.Mock } };
+  let legacyMigrationService: { setPassword: jest.Mock };
   let config: { get: jest.Mock };
   let service: AuthService;
 
@@ -77,16 +77,18 @@ describe('AuthService password reset (integration, real Redis)', () => {
     passwordService = { hash: jest.fn().mockResolvedValue('new-bcrypt-hash') };
     sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
     mailService = { sendPasswordReset: jest.fn().mockResolvedValue(undefined) };
-    prisma = { user: { update: jest.fn().mockResolvedValue(undefined) } };
+    legacyMigrationService = {
+      setPassword: jest.fn().mockResolvedValue(undefined),
+    };
     config = { get: jest.fn().mockReturnValue('http://localhost:3000') };
 
     service = new AuthService(
       usersService as unknown as UsersService,
       passwordService as unknown as PasswordService,
-      {} as unknown as LegacyMigrationService,
+      legacyMigrationService as unknown as LegacyMigrationService,
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
-      prisma as unknown as PrismaService,
+      {} as unknown as PrismaService,
       redis,
       mailService as unknown as MailService,
       config as unknown as ConfigService<Env, true>,
@@ -121,10 +123,10 @@ describe('AuthService password reset (integration, real Redis)', () => {
 
     const first = await service.resetPassword(token, 'newpassword123');
     expect(first).toEqual({ ok: true });
-    expect(prisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'user-1' },
-      data: { passwordHash: 'new-bcrypt-hash' },
-    });
+    expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
+      'user-1',
+      'new-bcrypt-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
 
     const key = `pwdreset:${sha256(token)}`;

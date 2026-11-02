@@ -21,6 +21,21 @@ function buildWpHash(password: string): string {
 }
 
 describe('verifyWordpressPassword', () => {
+  it.each(['a&b', 'a"b', 'a<b', 'a>b', 'a\\b', "a'b", 'ação🐾'])(
+    'accepts the official WordPress HMAC input for %s',
+    async (password) => {
+      const prepared = crypto
+        .createHmac('sha384', 'wp-sha384')
+        .update(password)
+        .digest('base64');
+      const hash = `$wp${bcrypt.hashSync(prepared, 4).replace(/^\$2[ab]\$/, '$2y$')}`;
+      expect(await verifyWordpressPassword(password, hash)).toBe(true);
+      expect(await verifyWordpressPassword(`${password}wrong`, hash)).toBe(
+        false,
+      );
+    },
+  );
+
   it('md5 legacy', async () => {
     const hash = '5d41402abc4b2a76b9719d911017c592'; // md5("hello")
     expect(await verifyWordpressPassword('hello', hash)).toBe(true);

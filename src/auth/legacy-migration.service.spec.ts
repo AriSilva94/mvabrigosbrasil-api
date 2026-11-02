@@ -48,6 +48,7 @@ type TxMock = {
     findFirst: jest.Mock<Promise<PostRawResult>, [PostRawFindFirstArgs]>;
   };
   wpUserLegacy: {
+    updateMany: jest.Mock;
     update: jest.Mock<Promise<unknown>, [{ where: unknown; data: unknown }]>;
   };
 };
@@ -113,6 +114,7 @@ function makeTx(): TxMock {
         .mockResolvedValue(null),
     },
     wpUserLegacy: {
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       update: jest
         .fn<Promise<unknown>, [{ where: unknown; data: unknown }]>()
         .mockResolvedValue({}),
@@ -149,6 +151,14 @@ describe('LegacyMigrationService', () => {
     await service.migrate(makeLegacy(), 'plain-pass');
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a stale legacy login after a password reset closed migration', async () => {
+    tx.wpUserLegacy.updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      service.migrate(makeLegacy(), 'old-password', makeUser()),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(tx.user.upsert).not.toHaveBeenCalled();
   });
 
   it('hashes the plaintext password with bcrypt, not the legacy hash', async () => {
@@ -240,12 +250,14 @@ describe('LegacyMigrationService', () => {
   it('marks wp_users_legacy as migrated with a migratedAt timestamp, without rewriting user_pass', async () => {
     await service.migrate(makeLegacy(), 'plain-pass');
 
-    expect(tx.wpUserLegacy.update).toHaveBeenCalledWith({
-      where: { id: 42n },
+    expect(tx.wpUserLegacy.updateMany).toHaveBeenCalledWith({
+      where: { id: 42n, migrated: false },
       data: { migrated: true, migratedAt: expect.any(Date) as Date },
     });
-    const [{ data }] = tx.wpUserLegacy.update.mock.calls[0];
-    expect((data as Record<string, unknown>).userPass).toBeUndefined();
+    const [{ data }] = tx.wpUserLegacy.updateMany.mock.calls[0] as [
+      { data: Record<string, unknown> },
+    ];
+    expect(data.userPass).toBeUndefined();
   });
 
   it('returns the upserted user from the transaction', async () => {

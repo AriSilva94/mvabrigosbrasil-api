@@ -151,9 +151,9 @@ export class AuthController {
       );
       return { ok: true };
     } catch (err) {
-      // Cobre tanto o reuso/roubo de rt (SessionService.rotate já destruiu
-      // a sessão) quanto qualquer outra falha ao renovar: em nenhum caso o
-      // cliente deve continuar com cookies de uma sessão morta.
+      // Cobre tanto o reuso/roubo fora da janela curta de concorrência
+      // (SessionService.rotate já destruiu a sessão) quanto qualquer outra
+      // falha ao renovar: o cliente não deve manter cookies de sessão morta.
       clearAuthCookies(res, this.config);
       throw err;
     }

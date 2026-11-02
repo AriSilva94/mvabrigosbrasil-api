@@ -56,7 +56,7 @@ describe('Auth Cookies', () => {
         'mv_rt',
         'refresh-token-value',
         expect.objectContaining({
-          path: '/api/v1/auth',
+          path: '/',
           maxAge: 2592000000, // 30 days in milliseconds
           httpOnly: true,
           sameSite: 'lax',
@@ -100,7 +100,7 @@ describe('Auth Cookies', () => {
         'mv_rt',
         'refresh-token-value',
         expect.objectContaining({
-          path: '/api/v1/auth',
+          path: '/',
           maxAge: 2592000000,
           httpOnly: true,
           sameSite: 'lax',
@@ -136,7 +136,7 @@ describe('Auth Cookies', () => {
       );
     });
 
-    it('should clear mv_rt cookie with path /api/v1/auth', () => {
+    it('should clear mv_rt cookie with path / and secure: false', () => {
       (mockConfig.get as jest.Mock).mockReturnValue(false);
 
       clearAuthCookies(mockRes as unknown as Response, mockConfig);
@@ -144,7 +144,8 @@ describe('Auth Cookies', () => {
       expect(mockRes.clearCookie).toHaveBeenCalledWith(
         'mv_rt',
         expect.objectContaining({
-          path: '/api/v1/auth',
+          path: '/',
+          secure: false,
         }),
       );
     });
@@ -171,7 +172,8 @@ describe('Auth Cookies', () => {
       expect(mockRes.clearCookie).toHaveBeenCalledWith(
         'mv_rt',
         expect.objectContaining({
-          path: '/api/v1/auth',
+          path: '/',
+          secure: true,
         }),
       );
     });

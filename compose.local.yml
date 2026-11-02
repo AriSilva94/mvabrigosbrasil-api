@@ -1,0 +1,149 @@
+name: mvabrigos-local
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mv
+      POSTGRES_PASSWORD: mv
+      POSTGRES_DB: mvabrigos
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mv -d mvabrigos"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "mv", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports: ["127.0.0.1:6380:6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "mv", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrator:
+    image: mvabrigos-local-migrator
+    build:
+      context: .
+      target: migrator
+    environment:
+      DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    image: mvabrigos-local-api
+    build:
+      context: .
+      target: runner
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
+      REDIS_URL: redis://:mv@redis:6379/0
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Defina AUTH_JWT_SECRET no arquivo local de ambiente}
+      APP_URL: http://localhost:3000
+      COOKIE_SECURE: "false"
+      BCRYPT_COST: 10
+    ports: ["127.0.0.1:3001:3001"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/v1/health').then(r=>r.json()).then(b=>process.exit(b.db==='up'&&b.redis==='up'?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    image: mvabrigos-local-web
+    build:
+      context: ../mvabrigosbrasil
+      args:
+        INTERNAL_API_URL: http://api:3001
+        NEXT_PUBLIC_SITE_URL: http://localhost:3000
+        NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT: ${NEXT_PUBLIC_IMAGEKIT_URL_ENDPOINT:-}
+        NEXT_PUBLIC_IMAGEKIT_ENABLED: ${NEXT_PUBLIC_IMAGEKIT_ENABLED:-false}
+        NEXT_PUBLIC_ANALYTICS_ENABLED: "false"
+        NEXT_PUBLIC_ANALYTICS_MODE: "off"
+    environment:
+      INTERNAL_API_URL: http://api:3001
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Defina AUTH_JWT_SECRET no arquivo local de ambiente}
+      NEXT_PUBLIC_SITE_URL: http://localhost:3000
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:alpine
+    ports: ["127.0.0.1:3000:80"]
+    volumes: ["./docker/local-gateway.conf:/etc/nginx/conf.d/default.conf:ro"]
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  mirror:
+    image: postgres:16-alpine
+    profiles: ["migration"]
+    environment:
+      POSTGRES_USER: mirror
+      POSTGRES_PASSWORD: mirror
+      POSTGRES_DB: supabase_mirror
+    ports: ["127.0.0.1:5434:5432"]
+    volumes:
+      - mirrordata:/var/lib/postgresql/data
+      - type: bind
+        source: ${SUPABASE_DUMP_DIR:?Defina SUPABASE_DUMP_DIR no arquivo local de ambiente}
+        target: /backup
+        read_only: true
+      - ./scripts/import/mirror-bootstrap.sql:/bootstrap.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mirror -d supabase_mirror"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  tools:
+    image: mvabrigos-local-tools
+    profiles: ["migration"]
+    build:
+      context: .
+      target: tools
+    environment:
+      DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
+      MIRROR_DATABASE_URL: postgresql://mirror:mirror@mirror:5432/supabase_mirror
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mirror:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  mirrordata:

@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Header } from '@nestjs/common';
 import { Public } from '../auth/decorators/public';
 import { HealthService, HealthStatus } from './health.service';
 
@@ -11,6 +11,7 @@ export class HealthController {
   constructor(private readonly health: HealthService) {}
   @Public()
   @Get()
+  @Header('Cache-Control', 'no-store')
   check(): Promise<HealthStatus> {
     return this.health.check();
   }
