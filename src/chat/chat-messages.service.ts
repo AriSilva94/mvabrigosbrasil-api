@@ -9,6 +9,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import type { ChatMessage, Prisma } from '../generated/prisma/client';
 import { ChatAccessService } from './chat-access.service';
+import { ChatEventsService } from './chat-events.service';
 import { ChatThreadsService } from './chat-threads.service';
 import { messageContentSchema } from './schemas/chat.schema';
 
@@ -77,12 +78,18 @@ function parseCursor(cursor: string): Prisma.ChatMessageWhereInput {
       };
 }
 
+const participantsOf = (thread: {
+  volunteerProfileId: string;
+  shelterProfileId: string;
+}): string[] => [thread.volunteerProfileId, thread.shelterProfileId];
+
 @Injectable()
 export class ChatMessagesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly access: ChatAccessService,
     private readonly threads: ChatThreadsService,
+    private readonly events: ChatEventsService,
   ) {}
 
   async list(
@@ -162,7 +169,9 @@ export class ChatMessagesService {
       return created;
     });
 
-    return toMessageDto(message);
+    const dto = toMessageDto(message);
+    this.events.messageCreated(dto, participantsOf(thread));
+    return dto;
   }
 
   async edit(
@@ -172,7 +181,7 @@ export class ChatMessagesService {
     input: unknown,
   ): Promise<MessageDto> {
     const content = parseContent(input);
-    await this.access.requireParticipant(threadId, userId);
+    const thread = await this.access.requireParticipant(threadId, userId);
     const message = UUID_RE.test(messageId)
       ? await this.prisma.chatMessage.findFirst({
           where: { id: messageId, threadId },
@@ -202,14 +211,16 @@ export class ChatMessagesService {
       where: { id: messageId },
       data: { content, editedAt: new Date() },
     });
-    return toMessageDto(updated);
+    const dto = toMessageDto(updated);
+    this.events.messageUpdated(dto, participantsOf(thread));
+    return dto;
   }
 
   async markRead(
     userId: string,
     threadId: string,
   ): Promise<{ unread_count: number; updated: MessageDto[] }> {
-    await this.access.requireParticipant(threadId, userId);
+    const thread = await this.access.requireParticipant(threadId, userId);
     const latest = await this.prisma.chatMessage.findFirst({
       where: { threadId, deletedAt: null },
       orderBy: { createdAt: 'desc' },
@@ -235,9 +246,13 @@ export class ChatMessagesService {
       });
     });
 
+    const dtos = updated.map(toMessageDto);
+    for (const dto of dtos) {
+      this.events.messageUpdated(dto, participantsOf(thread));
+    }
     return {
       unread_count: await this.threads.totalUnread(userId),
-      updated: updated.map(toMessageDto),
+      updated: dtos,
     };
   }
 }

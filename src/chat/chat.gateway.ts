@@ -3,12 +3,16 @@ import {
   type OnGatewayConnection,
   type OnGatewayDisconnect,
   type OnGatewayInit,
+  ConnectedSocket,
+  SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
 import { parse } from 'cookie';
 import type { Server, Socket } from 'socket.io';
 import { TokenService, type Claims } from '../auth/jwt/token.service';
+import { ChatAccessService } from './chat-access.service';
+import { PresenceService } from './presence.service';
 
 // Fica sob /api/v1 para passar pela mesma regra de roteamento (Traefik,
 // gateway local e rewrites do Next) e levar o cookie de sessão junto.
@@ -33,7 +37,11 @@ export class ChatGateway
 
   private readonly logger = new Logger(ChatGateway.name);
 
-  constructor(private readonly tokens: TokenService) {}
+  constructor(
+    private readonly tokens: TokenService,
+    private readonly presence: PresenceService,
+    private readonly access: ChatAccessService,
+  ) {}
 
   afterInit(server: Server): void {
     server.use((socket, next) => {
@@ -52,12 +60,57 @@ export class ChatGateway
 
   async handleConnection(socket: Socket): Promise<void> {
     const data = socket.data as SocketData;
-    await socket.join(userRoom(data.claims.sub));
+    const userId = data.claims.sub;
+    await socket.join(userRoom(userId));
     this.scheduleExpiry(socket, data);
+
+    try {
+      const [cameOnline, contacts] = await Promise.all([
+        this.presence.connect(userId),
+        this.access.counterpartIds(userId),
+      ]);
+      if (cameOnline) this.emitPresence(userId, true, contacts);
+      socket.emit('chat:presence-snapshot', {
+        online: await this.presence.onlineAmong(contacts),
+      });
+    } catch (error) {
+      this.logger.error('Falha ao registrar presença', error);
+    }
   }
 
-  handleDisconnect(socket: Socket): void {
-    clearTimeout((socket.data as SocketData).expiryTimer);
+  async handleDisconnect(socket: Socket): Promise<void> {
+    const data = socket.data as Partial<SocketData>;
+    clearTimeout(data.expiryTimer);
+    if (!data.claims) return;
+
+    const userId = data.claims.sub;
+    try {
+      if (await this.presence.disconnect(userId)) {
+        this.emitPresence(
+          userId,
+          false,
+          await this.access.counterpartIds(userId),
+        );
+      }
+    } catch (error) {
+      this.logger.error('Falha ao remover presença', error);
+    }
+  }
+
+  @SubscribeMessage('chat:heartbeat')
+  async heartbeat(@ConnectedSocket() socket: Socket): Promise<void> {
+    await this.presence.heartbeat((socket.data as SocketData).claims.sub);
+  }
+
+  private emitPresence(
+    userId: string,
+    online: boolean,
+    contacts: string[],
+  ): void {
+    if (contacts.length === 0) return;
+    this.server
+      .to(contacts.map(userRoom))
+      .emit('chat:presence', { profileId: userId, online });
   }
 
   private async authenticate(socket: Socket): Promise<Claims | null> {

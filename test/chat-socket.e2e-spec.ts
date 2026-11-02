@@ -1,4 +1,8 @@
+import { randomUUID } from 'crypto';
 import { Test } from '@nestjs/testing';
+import cookieParser from 'cookie-parser';
+import request from 'supertest';
+import type { App } from 'supertest/types';
 import type { INestApplication } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -11,6 +15,15 @@ import {
   userRoom,
 } from './../src/chat/chat.gateway';
 import { RedisIoAdapter } from './../src/chat/redis-io.adapter';
+import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
+import { PrismaService } from './../src/prisma/prisma.service';
+import {
+  authCookie,
+  cleanupChatPeople,
+  createThread,
+  seedChatPeople,
+  type ChatPeople,
+} from './helpers/chat-fixtures';
 
 const claims = (sub: string): Claims => ({
   sub,
@@ -39,12 +52,25 @@ function waitFor<T>(
   });
 }
 
+function expectSilence(socket: Socket, event: string, ms = 600): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handler = () => reject(new Error(`unexpected ${event}`));
+    socket.on(event, handler);
+    setTimeout(() => {
+      socket.off(event, handler);
+      resolve();
+    }, ms);
+  });
+}
+
 describe('Chat socket gateway (e2e)', () => {
-  let app: INestApplication;
+  let app: INestApplication<App>;
   let url: string;
   let tokens: TokenService;
   let jwt: JwtService;
   let config: ConfigService;
+  let prisma: PrismaService;
+  const seeded: ChatPeople[] = [];
   const sockets: Socket[] = [];
 
   const connect = (token?: string): Socket => {
@@ -64,6 +90,9 @@ describe('Chat socket gateway (e2e)', () => {
       imports: [AppModule],
     }).compile();
     app = moduleRef.createNestApplication();
+    app.use(cookieParser());
+    app.setGlobalPrefix('api/v1');
+    app.useGlobalFilters(new HttpExceptionFilter());
     const adapter = new RedisIoAdapter(app);
     await adapter.connectToRedis();
     app.useWebSocketAdapter(adapter);
@@ -72,6 +101,7 @@ describe('Chat socket gateway (e2e)', () => {
     tokens = app.get(TokenService);
     jwt = app.get(JwtService);
     config = app.get(ConfigService);
+    prisma = app.get(PrismaService);
   });
 
   afterEach(() => {
@@ -79,6 +109,7 @@ describe('Chat socket gateway (e2e)', () => {
   });
 
   afterAll(async () => {
+    for (const people of seeded) await cleanupChatPeople(prisma, people);
     await app.close();
   });
 
@@ -88,17 +119,18 @@ describe('Chat socket gateway (e2e)', () => {
   });
 
   it('accepts mv_at cookie and joins the user room', async () => {
-    const socket = connect(await tokens.sign(claims('user-a')));
+    const userA = randomUUID();
+    const socket = connect(await tokens.sign(claims(userA)));
     await waitFor(socket, 'connect');
 
     const received = waitFor<number>(socket, 'ping-test');
-    app.get(ChatGateway).server.to(userRoom('user-a')).emit('ping-test', 1);
+    app.get(ChatGateway).server.to(userRoom(userA)).emit('ping-test', 1);
 
     await expect(received).resolves.toBe(1);
   });
 
   it('disconnects when the access token expires', async () => {
-    const shortLived = await jwt.signAsync(claims('user-b'), {
+    const shortLived = await jwt.signAsync(claims(randomUUID()), {
       secret: config.getOrThrow<string>('AUTH_JWT_SECRET'),
       expiresIn: '1s',
       algorithm: 'HS256',
@@ -108,5 +140,137 @@ describe('Chat socket gateway (e2e)', () => {
 
     const reason = await waitFor<string>(socket, 'disconnect', 4000);
     expect(reason).toBe('io server disconnect');
+  });
+
+  describe('realtime events and presence', () => {
+    let people: ChatPeople;
+    let threadId: string;
+    const http = () => request(app.getHttpServer());
+
+    const connected = async (token: string): Promise<Socket> => {
+      const socket = connect(token);
+      await waitFor(socket, 'connect');
+      return socket;
+    };
+
+    beforeEach(async () => {
+      people = await seedChatPeople(
+        prisma,
+        tokens,
+        `rt-${randomUUID().slice(0, 6)}`,
+      );
+      seeded.push(people);
+      threadId = await createThread(prisma, people);
+    });
+
+    it('delivers chat:message to both participants and not to a third user', async () => {
+      const volunteer = await connected(people.volunteerUser.token);
+      const shelter = await connected(people.shelterOwner.token);
+      const outsider = await connected(people.outsider.token);
+      const toVolunteer = waitFor<{ content: string }>(
+        volunteer,
+        'chat:message',
+      );
+      const toShelter = waitFor<{ content: string; thread_id: string }>(
+        shelter,
+        'chat:message',
+      );
+      const silence = expectSilence(outsider, 'chat:message');
+
+      await http()
+        .post(`/api/v1/chat/threads/${threadId}/messages`)
+        .set('Cookie', authCookie(people.volunteerUser.token))
+        .send({ content: 'olá abrigo' })
+        .expect(200);
+
+      await expect(toVolunteer).resolves.toMatchObject({
+        content: 'olá abrigo',
+      });
+      await expect(toShelter).resolves.toMatchObject({
+        content: 'olá abrigo',
+        thread_id: threadId,
+      });
+      await silence;
+    });
+
+    it('edit and read emit chat:message-updated to both participants', async () => {
+      const sent = await http()
+        .post(`/api/v1/chat/threads/${threadId}/messages`)
+        .set('Cookie', authCookie(people.volunteerUser.token))
+        .send({ content: 'original' })
+        .expect(200);
+      const messageId = (sent.body as { message: { id: string } }).message.id;
+      const volunteer = await connected(people.volunteerUser.token);
+      const shelter = await connected(people.shelterOwner.token);
+
+      const edited = Promise.all([
+        waitFor<{ content: string }>(volunteer, 'chat:message-updated'),
+        waitFor<{ content: string }>(shelter, 'chat:message-updated'),
+      ]);
+      await http()
+        .patch(`/api/v1/chat/threads/${threadId}/messages/${messageId}`)
+        .set('Cookie', authCookie(people.volunteerUser.token))
+        .send({ content: 'editada' })
+        .expect(200);
+      for (const payload of await edited)
+        expect(payload.content).toBe('editada');
+
+      const read = waitFor<{ id: string; status: string }>(
+        volunteer,
+        'chat:message-updated',
+      );
+      await http()
+        .post(`/api/v1/chat/threads/${threadId}/read`)
+        .set('Cookie', authCookie(people.shelterOwner.token))
+        .expect(200);
+      await expect(read).resolves.toMatchObject({
+        id: messageId,
+        status: 'read',
+      });
+    });
+
+    it('presence: B sees A online/offline only if they share a thread; C never receives A presence', async () => {
+      const shelter = await connected(people.shelterOwner.token);
+      const outsider = await connected(people.outsider.token);
+      const silence = expectSilence(outsider, 'chat:presence', 1500);
+
+      const online = waitFor<{ profileId: string; online: boolean }>(
+        shelter,
+        'chat:presence',
+      );
+      const volunteer = await connected(people.volunteerUser.token);
+      await expect(online).resolves.toEqual({
+        profileId: people.volunteerUser.id,
+        online: true,
+      });
+
+      const offline = waitFor<{ profileId: string; online: boolean }>(
+        shelter,
+        'chat:presence',
+      );
+      volunteer.disconnect();
+      await expect(offline).resolves.toEqual({
+        profileId: people.volunteerUser.id,
+        online: false,
+      });
+      await silence;
+    });
+
+    it('two tabs of A: closing one keeps A online', async () => {
+      const tab1 = await connected(people.volunteerUser.token);
+      await connected(people.volunteerUser.token);
+      const shelter = connect(people.shelterOwner.token);
+      const snapshot = waitFor<{ online: string[] }>(
+        shelter,
+        'chat:presence-snapshot',
+      );
+      await expect(snapshot).resolves.toEqual({
+        online: [people.volunteerUser.id],
+      });
+
+      const silence = expectSilence(shelter, 'chat:presence');
+      tab1.disconnect();
+      await silence;
+    });
   });
 });
