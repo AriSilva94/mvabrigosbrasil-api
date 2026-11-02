@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AdminModule } from './admin/admin.module';
 import { ApplicationsModule } from './applications/applications.module';
 import { AuthModule } from './auth/auth.module';
+import { ChatModule } from './chat/chat.module';
 import { PasswordModule } from './auth/password/password.module';
 import { ConfigModule } from './config/config.module';
 import { DynamicsModule } from './dynamics/dynamics.module';
@@ -30,6 +31,7 @@ import { VolunteersModule } from './volunteers/volunteers.module';
     TeamModule,
     AdminModule,
     PublicDataModule,
+    ChatModule,
   ],
   controllers: [],
   providers: [],
