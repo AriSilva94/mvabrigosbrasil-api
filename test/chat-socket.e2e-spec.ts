@@ -272,5 +272,38 @@ describe('Chat socket gateway (e2e)', () => {
       tab1.disconnect();
       await silence;
     });
+
+    it('a new conversation shares presence between participants already online', async () => {
+      const fresh = await seedChatPeople(
+        prisma,
+        tokens,
+        `intro-${randomUUID().slice(0, 6)}`,
+      );
+      seeded.push(fresh);
+      const volunteer = await connected(fresh.volunteerUser.token);
+      const shelter = await connected(fresh.shelterOwner.token);
+      const shelterSeesVolunteer = waitFor<{
+        profileId: string;
+        online: boolean;
+      }>(shelter, 'chat:presence');
+      const volunteerSeesShelter = waitFor<{
+        profileId: string;
+        online: boolean;
+      }>(volunteer, 'chat:presence');
+
+      await http()
+        .post(`/api/v1/vacancies/${fresh.vacancyId}/apply`)
+        .set('Cookie', authCookie(fresh.volunteerUser.token))
+        .expect(200);
+
+      await expect(shelterSeesVolunteer).resolves.toEqual({
+        profileId: fresh.volunteerUser.id,
+        online: true,
+      });
+      await expect(volunteerSeesShelter).resolves.toEqual({
+        profileId: fresh.shelterOwner.id,
+        online: true,
+      });
+    });
   });
 });

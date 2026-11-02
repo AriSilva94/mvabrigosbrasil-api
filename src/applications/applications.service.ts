@@ -164,6 +164,11 @@ export class ApplicationsService {
           claims.sub,
           shelterProfileId,
         ]);
+        await this.chatEvents
+          .introduce(claims.sub, shelterProfileId)
+          .catch((error: unknown) =>
+            this.logger.error('Erro ao compartilhar presença', error),
+          );
       }
       return {
         application: mapApplication(application),
