@@ -153,6 +153,9 @@ export class ChatThreadsService {
           threadId: thread.id,
           profileId: input.shelterProfileId,
           role: 'shelter',
+          // Participante e mensagem de sistema recebem now() do cliente no mesmo
+          // ms; sem isso o `created_at > last_read_at` do inbox perde a mensagem.
+          lastReadAt: new Date(0),
         },
       ],
       skipDuplicates: true,
