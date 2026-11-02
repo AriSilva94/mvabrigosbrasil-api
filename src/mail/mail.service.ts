@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
+import type { EmailAttachment } from './email-assets';
 import { passwordResetEmail } from './password-reset.template';
 
 export const MAIL_TRANSPORT = 'MAIL_TRANSPORT';
@@ -14,6 +15,7 @@ export interface MailTransport {
     subject: string;
     html: string;
     text: string;
+    attachments: EmailAttachment[];
   }): Promise<unknown>;
 }
 
@@ -21,11 +23,13 @@ export interface MailTransport {
 const PASSWORD_RESET_VALIDITY_MINUTES = 60;
 
 const DEFAULT_FROM = 'MV Abrigos <contato@mvabrigosbrasil.com.br>';
+const DEFAULT_SITE_URL = 'https://mvabrigosbrasil.com.br';
 
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly from: string;
+  private readonly siteUrl: string;
 
   constructor(
     // `null` em dev/teste sempre que SMTP_HOST está ausente (ver a factory do
@@ -34,12 +38,15 @@ export class MailService {
     config: ConfigService<Env, true>,
   ) {
     this.from = config.get('MAIL_FROM', { infer: true }) ?? DEFAULT_FROM;
+    const appUrl = config.get('APP_URL', { infer: true });
+    this.siteUrl = appUrl ? new URL(appUrl).origin : DEFAULT_SITE_URL;
   }
 
   async sendPasswordReset(email: string, link: string): Promise<void> {
-    const { subject, html, text } = passwordResetEmail(
+    const { subject, html, text, attachments } = passwordResetEmail(
       link,
       PASSWORD_RESET_VALIDITY_MINUTES,
+      this.siteUrl,
     );
 
     if (!this.transport) {
@@ -67,6 +74,7 @@ export class MailService {
         subject,
         html,
         text,
+        attachments,
       });
     } catch (err) {
       // forgot-password nunca deve falhar por causa de um problema no envio

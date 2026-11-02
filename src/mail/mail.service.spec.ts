@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { MailService } from './mail.service';
 import type { MailTransport } from './mail.service';
+import { passwordResetEmail } from './password-reset.template';
 
 describe('MailService.sendPasswordReset', () => {
   it('sends via the injected SMTP transport with from = MAIL_FROM and the link in the html body', async () => {
@@ -11,6 +12,7 @@ describe('MailService.sendPasswordReset', () => {
         subject: string;
         html: string;
         text: string;
+        attachments: { cid: string; content: Buffer }[];
       }) => Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
     );
     const fakeTransport: MailTransport = { sendMail: send };
@@ -33,6 +35,13 @@ describe('MailService.sendPasswordReset', () => {
     expect(payload.html).toContain(`href="${link}"`);
     expect(payload.html).toContain('Redefinir minha senha');
     expect(payload.text).toContain(link);
+
+    // Toda imagem referenciada por cid no HTML precisa ir como anexo.
+    expect(payload.attachments).toHaveLength(2);
+    for (const { cid, content } of payload.attachments) {
+      expect(payload.html).toContain(`cid:${cid}`);
+      expect(content.length).toBeGreaterThan(0);
+    }
   });
 
   it('does not throw and does not call send when there is no transport (dev without SMTP_HOST)', async () => {
@@ -109,7 +118,10 @@ describe('MailService.sendPasswordReset', () => {
     const send = jest.fn().mockRejectedValue(new Error('boom'));
     const fakeTransport: MailTransport = { sendMail: send };
     const config = {
-      get: () => 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>',
+      get: (key: string) =>
+        key === 'MAIL_FROM'
+          ? 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>'
+          : undefined,
     };
 
     const service = new MailService(fakeTransport, config as never);
@@ -120,5 +132,27 @@ describe('MailService.sendPasswordReset', () => {
         'http://x/redefinir-senha?token=t',
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('passwordResetEmail', () => {
+  it('escapes the link in href and text so a crafted query cannot break the markup', () => {
+    const link = 'https://x.test/redefinir-senha?token=a&b="><script>';
+
+    const { html } = passwordResetEmail(link, 60, 'https://x.test');
+
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('token=a&amp;b=&quot;&gt;&lt;script&gt;');
+  });
+
+  it('shows the validity in the preheader, body note and plain text', () => {
+    const { html, text } = passwordResetEmail(
+      'https://x.test/redefinir-senha?token=t',
+      45,
+      'https://x.test',
+    );
+
+    expect(html).toContain('45 minutos');
+    expect(text).toContain('45 minutos');
   });
 });
