@@ -1,14 +1,14 @@
 import { Logger } from '@nestjs/common';
 import { MailService } from './mail.service';
-import type { ResendLikeClient } from './mail.service';
+import type { MailTransport } from './mail.service';
 
 describe('MailService.sendPasswordReset', () => {
-  it('sends via the injected Resend client with from = MAIL_FROM and the link in the html body', async () => {
+  it('sends via the injected SMTP transport with from = MAIL_FROM and the link in the html body', async () => {
     const send = jest.fn(
       (payload: { from: string; to: string; subject: string; html: string }) =>
         Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
     );
-    const fakeClient: ResendLikeClient = { emails: { send } };
+    const fakeTransport: MailTransport = { sendMail: send };
     const config = {
       get: (key: string) =>
         key === 'MAIL_FROM'
@@ -16,7 +16,7 @@ describe('MailService.sendPasswordReset', () => {
           : undefined,
     };
 
-    const service = new MailService(fakeClient, config as never);
+    const service = new MailService(fakeTransport, config as never);
     const link = 'http://localhost:3000/redefinir-senha?token=abc123';
 
     await service.sendPasswordReset('joao@example.com', link);
@@ -28,7 +28,7 @@ describe('MailService.sendPasswordReset', () => {
     expect(payload.html).toContain(link);
   });
 
-  it('does not throw and does not call send when there is no client (dev without RESEND_API_KEY)', async () => {
+  it('does not throw and does not call send when there is no transport (dev without SMTP_HOST)', async () => {
     const config = {
       get: (key: string) =>
         key === 'MAIL_FROM'
@@ -43,7 +43,7 @@ describe('MailService.sendPasswordReset', () => {
     ).resolves.toBeUndefined();
   });
 
-  describe('without a client (RESEND_API_KEY missing), guarded by NODE_ENV', () => {
+  describe('without a transport (SMTP_HOST missing), guarded by NODE_ENV', () => {
     const originalNodeEnv = process.env.NODE_ENV;
     const config = {
       get: (key: string) =>
@@ -98,14 +98,14 @@ describe('MailService.sendPasswordReset', () => {
     });
   });
 
-  it('does not throw when the Resend client rejects (e.g. invalid key/network error)', async () => {
+  it('does not throw when the transport rejects (e.g. bad credentials/network error)', async () => {
     const send = jest.fn().mockRejectedValue(new Error('boom'));
-    const fakeClient: ResendLikeClient = { emails: { send } };
+    const fakeTransport: MailTransport = { sendMail: send };
     const config = {
       get: () => 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>',
     };
 
-    const service = new MailService(fakeClient, config as never);
+    const service = new MailService(fakeTransport, config as never);
 
     await expect(
       service.sendPasswordReset(

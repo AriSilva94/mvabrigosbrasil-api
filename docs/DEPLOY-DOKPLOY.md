@@ -59,7 +59,7 @@ Configurar no runtime da API:
 
 - DATABASE_URL e REDIS_URL de serviços exclusivos daquele ambiente.
 - AUTH_JWT_SECRET, APP_URL e COOKIE_SECURE=true com HTTPS.
-- RESEND_API_KEY e MAIL_FROM quando o envio de e-mail estiver habilitado.
+- SMTP_HOST (smtp.hostinger.com), SMTP_PORT (465), SMTP_SECURE (true), SMTP_USER (caixa de e-mail completa), SMTP_PASS e MAIL_FROM quando o envio de e-mail estiver habilitado. Sem SMTP_HOST a API não envia e-mail e, em produção, só registra um aviso no log.
 
 APP_REVISION é incorporado pelo build; não sobrescrever no Dokploy. Os endpoints de health retornam Cache-Control: no-store. A API mantém as verificações reais de PostgreSQL e Redis.
 

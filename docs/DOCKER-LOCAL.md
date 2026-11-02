@@ -17,7 +17,7 @@ O nome do projeto Compose é `mvabrigos-local`. Seus volumes são separados dos 
 
 Executar os comandos a partir de `mvabrigosbrasil-api`. Copiar `.env.docker.local.example` para `.env.docker.local`, informar o diretório que contém `schema.sql` e `data.sql` e gerar um segredo JWT com pelo menos 32 caracteres. O mesmo segredo é injetado nos dois serviços; ele não é passado como build arg nem copiado para as imagens. O arquivo `.env.docker.local` é ignorado pelo Git.
 
-O ambiente local desativa analytics e o envio de e-mails reais. A API não recebe `RESEND_API_KEY` neste Compose. Recuperação com entrega real de e-mail exige a configuração específica do ambiente antes do deploy.
+O ambiente local desativa analytics e o envio de e-mails reais. A API não recebe `SMTP_HOST` neste Compose, e por isso só registra o link de recuperação no log. Recuperação com entrega real de e-mail exige a configuração específica do ambiente antes do deploy.
 
 ## Primeira carga
 

@@ -2,23 +2,20 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 
-export const RESEND_CLIENT = 'RESEND_CLIENT';
+export const MAIL_TRANSPORT = 'MAIL_TRANSPORT';
 
-// Minimal shape of the Resend SDK surface this service actually uses, so
-// tests can inject a fake client without depending on the real `resend`
-// package's types.
-export interface ResendLikeClient {
-  emails: {
-    send(payload: {
-      from: string;
-      to: string;
-      subject: string;
-      html: string;
-    }): Promise<unknown>;
-  };
+// Recorte do nodemailer que este serviço usa, para os testes injetarem um
+// transporte falso sem depender dos tipos do pacote.
+export interface MailTransport {
+  sendMail(payload: {
+    from: string;
+    to: string;
+    subject: string;
+    html: string;
+  }): Promise<unknown>;
 }
 
-const DEFAULT_FROM = 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>';
+const DEFAULT_FROM = 'MV Abrigos <contato@mvabrigosbrasil.com.br>';
 
 @Injectable()
 export class MailService {
@@ -26,10 +23,9 @@ export class MailService {
   private readonly from: string;
 
   constructor(
-    // `null` in dev/test whenever RESEND_API_KEY is absent/empty (see
-    // MailModule's factory) — sendPasswordReset logs instead of sending in
-    // that case, and never throws either way.
-    @Inject(RESEND_CLIENT) private readonly client: ResendLikeClient | null,
+    // `null` em dev/teste sempre que SMTP_HOST está ausente (ver a factory do
+    // MailModule): sendPasswordReset só loga nesse caso e nunca lança.
+    @Inject(MAIL_TRANSPORT) private readonly transport: MailTransport | null,
     config: ConfigService<Env, true>,
   ) {
     this.from = config.get('MAIL_FROM', { infer: true }) ?? DEFAULT_FROM;
@@ -44,26 +40,26 @@ export class MailService {
       <p>Se você não solicitou essa alteração, ignore este e-mail.</p>
     `.trim();
 
-    if (!this.client) {
+    if (!this.transport) {
       if (process.env.NODE_ENV !== 'production') {
-        // Conveniência de dev/teste: sem RESEND_API_KEY, loga o link (com
-        // token) para permitir seguir o fluxo manualmente. Nunca em produção.
+        // Conveniência de dev/teste: sem SMTP_HOST, loga o link (com token)
+        // para permitir seguir o fluxo manualmente. Nunca em produção.
         this.logger.log(
-          `RESEND_API_KEY não configurado — link de redefinição de senha para ${email}: ${link}`,
+          `SMTP_HOST não configurado — link de redefinição de senha para ${email}: ${link}`,
         );
       } else {
-        // Em produção, uma key ausente é uma falha de configuração — nunca
-        // logar o token em claro. Apenas avisa e segue (forgot-password
-        // nunca deve falhar por causa do envio de e-mail).
+        // Em produção, SMTP ausente é falha de configuração — nunca logar o
+        // token em claro. Apenas avisa e segue (forgot-password nunca deve
+        // falhar por causa do envio de e-mail).
         this.logger.warn(
-          `RESEND_API_KEY não configurado em produção — e-mail de redefinição de senha para ${email} não pôde ser enviado`,
+          `SMTP_HOST não configurado em produção — e-mail de redefinição de senha para ${email} não pôde ser enviado`,
         );
       }
       return;
     }
 
     try {
-      await this.client.emails.send({
+      await this.transport.sendMail({
         from: this.from,
         to: email,
         subject,

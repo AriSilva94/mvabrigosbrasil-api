@@ -19,7 +19,11 @@ export const envSchema = z.object({
   COOKIE_SECURE: bool.default(false),
   APP_URL: z.string().url(),
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(10),
-  RESEND_API_KEY: z.string().optional(),
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().positive().optional(),
+  SMTP_SECURE: bool.optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().optional(),
 });
 
