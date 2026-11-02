@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   type OnGatewayConnection,
   type OnGatewayDisconnect,
@@ -11,6 +12,7 @@ import {
 import { parse } from 'cookie';
 import type { Server, Socket } from 'socket.io';
 import { TokenService, type Claims } from '../auth/jwt/token.service';
+import type { Env } from '../config/env.validation';
 import { ChatAccessService } from './chat-access.service';
 import { PresenceService } from './presence.service';
 
@@ -41,9 +43,21 @@ export class ChatGateway
     private readonly tokens: TokenService,
     private readonly presence: PresenceService,
     private readonly access: ChatAccessService,
+    private readonly config: ConfigService<Env, true>,
   ) {}
 
   afterInit(server: Server): void {
+    const appOrigin = new URL(this.config.get('APP_URL', { infer: true }))
+      .origin;
+    server.use((socket, next) => {
+      // WebSocket não passa por CORS: sem esta checagem outro site poderia
+      // abrir o socket com o cookie do usuário quando o navegador o envia.
+      const origin = socket.handshake.headers.origin;
+      if (origin && origin !== appOrigin) {
+        return next(new Error('forbidden origin'));
+      }
+      next();
+    });
     server.use((socket, next) => {
       void this.authenticate(socket)
         .then((claims) => {

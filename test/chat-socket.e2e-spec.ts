@@ -73,13 +73,16 @@ describe('Chat socket gateway (e2e)', () => {
   const seeded: ChatPeople[] = [];
   const sockets: Socket[] = [];
 
-  const connect = (token?: string): Socket => {
+  const connect = (token?: string, origin?: string): Socket => {
     const socket = io(url, {
       path: CHAT_SOCKET_PATH,
       addTrailingSlash: false,
       transports: ['websocket'],
       reconnection: false,
-      extraHeaders: token ? { cookie: `mv_at=${token}` } : {},
+      extraHeaders: {
+        ...(token ? { cookie: `mv_at=${token}` } : {}),
+        ...(origin ? { origin } : {}),
+      },
     });
     sockets.push(socket);
     return socket;
@@ -116,6 +119,21 @@ describe('Chat socket gateway (e2e)', () => {
   it('rejects a connection without mv_at', async () => {
     const error = await waitFor<Error>(connect(), 'connect_error');
     expect(error.message).toBe('unauthorized');
+  });
+
+  it('rejects a browser handshake from another origin', async () => {
+    const token = await tokens.sign(claims(randomUUID()));
+    const error = await waitFor<Error>(
+      connect(token, 'https://evil.example'),
+      'connect_error',
+    );
+    expect(error.message).toBe('forbidden origin');
+  });
+
+  it('accepts a browser handshake from APP_URL', async () => {
+    const token = await tokens.sign(claims(randomUUID()));
+    const appOrigin = new URL(config.getOrThrow<string>('APP_URL')).origin;
+    await waitFor(connect(token, appOrigin), 'connect');
   });
 
   it('accepts mv_at cookie and joins the user room', async () => {
