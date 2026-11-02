@@ -12,6 +12,7 @@ import {
 import { CurrentUser } from '../auth/decorators/current-user';
 import type { Claims } from '../auth/jwt/token.service';
 import { ChatMessagesService } from './chat-messages.service';
+import { ChatModerationService } from './chat-moderation.service';
 import { ChatThreadsService } from './chat-threads.service';
 
 type ContentBody = { content?: unknown } | undefined;
@@ -21,6 +22,7 @@ export class ChatController {
   constructor(
     private readonly threads: ChatThreadsService,
     private readonly messages: ChatMessagesService,
+    private readonly moderation: ChatModerationService,
   ) {}
 
   @Get('threads')
@@ -84,5 +86,19 @@ export class ChatController {
   async markRead(@CurrentUser() claims: Claims, @Param('id') threadId: string) {
     const { unread_count } = await this.messages.markRead(claims.sub, threadId);
     return { success: true, unread_count };
+  }
+
+  @Post('blocks')
+  @HttpCode(HttpStatus.OK)
+  async block(@CurrentUser() claims: Claims, @Body() body: unknown) {
+    await this.moderation.block(claims.sub, body);
+    return { success: true };
+  }
+
+  @Post('reports')
+  @HttpCode(HttpStatus.OK)
+  async report(@CurrentUser() claims: Claims, @Body() body: unknown) {
+    await this.moderation.report(claims.sub, body);
+    return { success: true };
   }
 }

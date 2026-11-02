@@ -5,6 +5,7 @@ import { ChatAccessService } from './chat-access.service';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
 import { ChatMessagesService } from './chat-messages.service';
+import { ChatModerationService } from './chat-moderation.service';
 import { ChatThreadsService } from './chat-threads.service';
 
 @Module({
@@ -15,6 +16,7 @@ import { ChatThreadsService } from './chat-threads.service';
     ChatAccessService,
     ChatThreadsService,
     ChatMessagesService,
+    ChatModerationService,
   ],
   exports: [ChatGateway, ChatAccessService, ChatThreadsService],
 })

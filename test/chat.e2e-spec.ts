@@ -492,4 +492,70 @@ describe('Chat REST (e2e)', () => {
       expect(ownAfter.status).toBe('sent');
     });
   });
+
+  describe('moderation', () => {
+    it('blocks, 409 "Usuário já bloqueado" on repeat, 400 on self and invalid input', async () => {
+      const people = await seed(`block-${randomUUID().slice(0, 6)}`);
+      const block = (body: unknown) =>
+        request(app.getHttpServer())
+          .post('/api/v1/chat/blocks')
+          .set('Cookie', authCookie(people.volunteerUser.token))
+          .send(body as object);
+
+      await block({
+        blocked_id: people.shelterOwner.id,
+        reason: 'x'.repeat(600),
+      }).expect(200, { success: true });
+      const stored = await prisma.chatBlock.findFirstOrThrow({
+        where: { blockerId: people.volunteerUser.id },
+      });
+      expect(stored.reason).toHaveLength(500);
+
+      await block({ blocked_id: people.shelterOwner.id }).expect(409, {
+        error: 'Usuário já bloqueado',
+      });
+      await block({ blocked_id: people.volunteerUser.id }).expect(400, {
+        error: 'Não pode bloquear a si mesmo',
+      });
+      await block({}).expect(400, { error: 'Dados inválidos' });
+    });
+
+    it('reports, 409 "Denúncia já registrada" on same message, 400 "Dados inválidos" on missing/too long reason', async () => {
+      const people = await seed(`report-${randomUUID().slice(0, 6)}`);
+      const threadId = await createThread(prisma, people);
+      const target = await message(
+        threadId,
+        people.shelterOwner.id,
+        new Date(),
+      );
+      const report = (body: unknown) =>
+        request(app.getHttpServer())
+          .post('/api/v1/chat/reports')
+          .set('Cookie', authCookie(people.volunteerUser.token))
+          .send(body as object);
+      const valid = {
+        reported_user_id: people.shelterOwner.id,
+        reason: '  ofensivo  ',
+        thread_id: threadId,
+        message_id: target.id,
+      };
+
+      await report(valid).expect(200, { success: true });
+      const stored = await prisma.chatReport.findFirstOrThrow({
+        where: { reporterId: people.volunteerUser.id },
+      });
+      expect(stored).toMatchObject({ reason: 'ofensivo', status: 'pending' });
+
+      await report(valid).expect(409, { error: 'Denúncia já registrada' });
+      await report({ ...valid, reason: '   ' }).expect(400, {
+        error: 'Dados inválidos',
+      });
+      await report({ ...valid, reason: 'x'.repeat(1001) }).expect(400, {
+        error: 'Dados inválidos',
+      });
+      await report({ reason: 'sem alvo' }).expect(400, {
+        error: 'Dados inválidos',
+      });
+    });
+  });
 });
