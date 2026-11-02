@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PasswordService } from './password/password.service';
@@ -37,6 +37,15 @@ export class LegacyMigrationService {
     const isTeamOnly = existingUser?.isTeamOnly ?? false;
 
     return this.prisma.$transaction(async (tx) => {
+      // O estado lido antes de validar a senha pode ter mudado durante o
+      // bcrypt. O UPDATE condicional serializa login legado e troca de senha.
+      const claimed = await tx.wpUserLegacy.updateMany({
+        where: { id: legacy.id, migrated: false },
+        data: { migrated: true, migratedAt: new Date() },
+      });
+      if (claimed.count !== 1) {
+        throw new UnauthorizedException({ error: 'Senha inválida' });
+      }
       const role =
         existingUser?.role ?? (await this.resolveRoleFromWp(tx, legacy.id));
 
@@ -57,26 +66,66 @@ export class LegacyMigrationService {
         update: data,
       });
 
-      await this.linkPost(tx, legacy.id, 'voluntario', async (wpPostId) => {
-        await tx.volunteer.updateMany({
-          where: { wpPostId, ownerProfileId: null },
-          data: { ownerProfileId: userId },
-        });
-      });
-
-      await this.linkPost(tx, legacy.id, 'abrigo', async (wpPostId) => {
-        await tx.shelter.updateMany({
-          where: { wpPostId, profileId: null },
-          data: { profileId: userId },
-        });
-      });
-
-      await tx.wpUserLegacy.update({
-        where: { id: legacy.id },
-        data: { migrated: true, migratedAt: new Date() },
-      });
+      await this.linkUserPosts(tx, legacy.id, userId);
 
       return user;
+    });
+  }
+
+  async setPassword(userId: string, passwordHash: string): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
+      const pending = await tx.wpUserLegacy.findMany({
+        where: {
+          userEmail: { equals: user.email, mode: 'insensitive' },
+          migrated: false,
+        },
+        orderBy: { id: 'asc' },
+      });
+
+      // Adquire os locks do legado antes do usuário, na mesma ordem usada
+      // pelo login lazy. Os vínculos são concluídos junto com a senha nova.
+      for (const legacy of pending) {
+        const claimed = await tx.wpUserLegacy.updateMany({
+          where: { id: legacy.id, migrated: false },
+          data: { migrated: true, migratedAt: new Date() },
+        });
+        if (claimed.count === 1) {
+          await this.linkUserPosts(tx, legacy.id, userId);
+        }
+      }
+
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash,
+          ...(pending.length > 0 && {
+            wpUserId: user.wpUserId ?? Number(pending[0].id),
+            role:
+              user.role ?? (await this.resolveRoleFromWp(tx, pending[0].id)),
+          }),
+        },
+      });
+    });
+  }
+
+  private async linkUserPosts(
+    tx: TxClient,
+    legacyId: bigint,
+    userId: string,
+  ): Promise<void> {
+    await this.linkPost(tx, legacyId, 'voluntario', async (wpPostId) => {
+      await tx.volunteer.updateMany({
+        where: { wpPostId, ownerProfileId: null },
+        data: { ownerProfileId: userId },
+      });
+    });
+
+    await this.linkPost(tx, legacyId, 'abrigo', async (wpPostId) => {
+      await tx.shelter.updateMany({
+        where: { wpPostId, profileId: null },
+        data: { profileId: userId },
+      });
     });
   }
 

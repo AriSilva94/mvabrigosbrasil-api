@@ -3,6 +3,14 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import { RedisService } from './redis.service';
+import {
+  REFRESH_ROTATION_GRACE_SECONDS,
+  USER_SESSIONS_KEY_PREFIX,
+  refreshRotationGraceKey,
+  sessionKey,
+  userSessionsKey,
+} from './session.keys';
+import { ROTATE_SESSION_SCRIPT } from './session-rotation.script';
 
 interface StoredSession {
   userId: string;
@@ -36,14 +44,6 @@ export function parseDurationToSeconds(value: string): number {
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
-}
-
-function sessionKey(sid: string): string {
-  return `sess:${sid}`;
-}
-
-function userSessionsKey(userId: string): string {
-  return `user_sess:${userId}`;
 }
 
 @Injectable()
@@ -92,39 +92,41 @@ export class SessionService {
   }
 
   async rotate(sid: string, rt: string): Promise<{ rt: string } | null> {
-    const raw = await this.redis.client.get(sessionKey(sid));
-    if (!raw) {
-      return null;
-    }
-    const stored = JSON.parse(raw) as StoredSession;
-    if (stored.rtHash !== sha256(rt)) {
-      // Reuse of an already-rotated (or otherwise invalid) rt: treat as
-      // theft detection and kill the session so no further rt can be used.
-      await this.revoke(sid);
-      return null;
-    }
-
     const newRt = randomBytes(32).toString('base64url');
-    const updated: StoredSession = {
-      ...stored,
-      rtHash: sha256(newRt),
-    };
-    const ttl = this.ttlSeconds;
+    const previousRtHash = sha256(rt);
+    const result: unknown = await this.redis.client.eval(
+      ROTATE_SESSION_SCRIPT,
+      2,
+      sessionKey(sid),
+      refreshRotationGraceKey(sid, previousRtHash),
+      sid,
+      previousRtHash,
+      newRt,
+      sha256(newRt),
+      this.ttlSeconds,
+      REFRESH_ROTATION_GRACE_SECONDS,
+      USER_SESSIONS_KEY_PREFIX,
+    );
 
-    await this.redis.client
-      .multi()
-      .set(sessionKey(sid), JSON.stringify(updated), 'EX', ttl)
-      .expire(userSessionsKey(stored.userId), ttl)
-      .exec();
+    if (!Array.isArray(result) || typeof result[0] !== 'number') {
+      throw new Error('Unexpected refresh rotation response from Redis');
+    }
 
-    return { rt: newRt };
+    const [status, successor] = result as [number, unknown];
+    if (status === 0) {
+      return null;
+    }
+    if ((status === 1 || status === 2) && typeof successor === 'string') {
+      return { rt: successor };
+    }
+    throw new Error('Unexpected refresh rotation response from Redis');
   }
 
   // Small accessor added in task 9 so `AuthController.refresh` can rebuild
   // fresh JWT claims after a successful rotation without weakening
-  // `rotate`'s single-use/theft-detection contract (its return type stays
-  // `{ rt } | null`). Reads the same `sess:{sid}` record `rotate` just
-  // wrote/validated; does not consume or mutate anything.
+  // `rotate`'s bounded-grace/theft-detection contract (its return type stays
+  // `{ rt } | null`). Reads the same `sess:{sid}` record `rotate` just wrote
+  // or validated; does not consume or mutate anything.
   async getUserId(sid: string): Promise<string | null> {
     const raw = await this.redis.client.get(sessionKey(sid));
     if (!raw) {

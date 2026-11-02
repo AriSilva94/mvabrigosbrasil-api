@@ -1,14 +1,21 @@
 import { Logger } from '@nestjs/common';
 import { MailService } from './mail.service';
-import type { ResendLikeClient } from './mail.service';
+import type { MailTransport } from './mail.service';
+import { passwordResetEmail } from './password-reset.template';
 
 describe('MailService.sendPasswordReset', () => {
-  it('sends via the injected Resend client with from = MAIL_FROM and the link in the html body', async () => {
+  it('sends via the injected SMTP transport with from = MAIL_FROM and the link in the html body', async () => {
     const send = jest.fn(
-      (payload: { from: string; to: string; subject: string; html: string }) =>
-        Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
+      (payload: {
+        from: string;
+        to: string;
+        subject: string;
+        html: string;
+        text: string;
+        attachments: { cid: string; content: Buffer }[];
+      }) => Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
     );
-    const fakeClient: ResendLikeClient = { emails: { send } };
+    const fakeTransport: MailTransport = { sendMail: send };
     const config = {
       get: (key: string) =>
         key === 'MAIL_FROM'
@@ -16,7 +23,7 @@ describe('MailService.sendPasswordReset', () => {
           : undefined,
     };
 
-    const service = new MailService(fakeClient, config as never);
+    const service = new MailService(fakeTransport, config as never);
     const link = 'http://localhost:3000/redefinir-senha?token=abc123';
 
     await service.sendPasswordReset('joao@example.com', link);
@@ -25,10 +32,19 @@ describe('MailService.sendPasswordReset', () => {
     const payload = send.mock.calls[0][0];
     expect(payload.to).toBe('joao@example.com');
     expect(payload.from).toBe('MV Abrigos <no-reply@mvabrigosbrasil.com.br>');
-    expect(payload.html).toContain(link);
+    expect(payload.html).toContain(`href="${link}"`);
+    expect(payload.html).toContain('Redefinir minha senha');
+    expect(payload.text).toContain(link);
+
+    // Toda imagem referenciada por cid no HTML precisa ir como anexo.
+    expect(payload.attachments).toHaveLength(2);
+    for (const { cid, content } of payload.attachments) {
+      expect(payload.html).toContain(`cid:${cid}`);
+      expect(content.length).toBeGreaterThan(0);
+    }
   });
 
-  it('does not throw and does not call send when there is no client (dev without RESEND_API_KEY)', async () => {
+  it('does not throw and does not call send when there is no transport (dev without SMTP_HOST)', async () => {
     const config = {
       get: (key: string) =>
         key === 'MAIL_FROM'
@@ -43,7 +59,7 @@ describe('MailService.sendPasswordReset', () => {
     ).resolves.toBeUndefined();
   });
 
-  describe('without a client (RESEND_API_KEY missing), guarded by NODE_ENV', () => {
+  describe('without a transport (SMTP_HOST missing), guarded by NODE_ENV', () => {
     const originalNodeEnv = process.env.NODE_ENV;
     const config = {
       get: (key: string) =>
@@ -98,14 +114,17 @@ describe('MailService.sendPasswordReset', () => {
     });
   });
 
-  it('does not throw when the Resend client rejects (e.g. invalid key/network error)', async () => {
+  it('does not throw when the transport rejects (e.g. bad credentials/network error)', async () => {
     const send = jest.fn().mockRejectedValue(new Error('boom'));
-    const fakeClient: ResendLikeClient = { emails: { send } };
+    const fakeTransport: MailTransport = { sendMail: send };
     const config = {
-      get: () => 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>',
+      get: (key: string) =>
+        key === 'MAIL_FROM'
+          ? 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>'
+          : undefined,
     };
 
-    const service = new MailService(fakeClient, config as never);
+    const service = new MailService(fakeTransport, config as never);
 
     await expect(
       service.sendPasswordReset(
@@ -113,5 +132,27 @@ describe('MailService.sendPasswordReset', () => {
         'http://x/redefinir-senha?token=t',
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('passwordResetEmail', () => {
+  it('escapes the link in href and text so a crafted query cannot break the markup', () => {
+    const link = 'https://x.test/redefinir-senha?token=a&b="><script>';
+
+    const { html } = passwordResetEmail(link, 60, 'https://x.test');
+
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('token=a&amp;b=&quot;&gt;&lt;script&gt;');
+  });
+
+  it('shows the validity in the preheader, body note and plain text', () => {
+    const { html, text } = passwordResetEmail(
+      'https://x.test/redefinir-senha?token=t',
+      45,
+      'https://x.test',
+    );
+
+    expect(html).toContain('45 minutos');
+    expect(text).toContain('45 minutos');
   });
 });

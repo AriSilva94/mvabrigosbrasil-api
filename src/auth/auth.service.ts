@@ -32,6 +32,7 @@ function pwdResetKey(tokenHash: string): string {
 
 // Doc 03 §10: link válido por 60 minutos, uso único.
 const PWD_RESET_TTL_SECONDS = 60 * 60;
+const LEGACY_RESET_PREFIX = 'legacy:';
 const MIN_PASSWORD_LENGTH = 6;
 
 export type LoginResult = {
@@ -130,7 +131,13 @@ export class AuthService {
       );
       if (r.valid) {
         if (r.needsRehash) {
-          await this.rehash(user.id, normalizedPassword);
+          const unchanged = await this.rehash(
+            user.id,
+            normalizedPassword,
+            user.passwordHash,
+          );
+          if (!unchanged)
+            throw new UnauthorizedException({ error: 'Senha inválida' });
         }
         authenticatedUser = user;
         migrated = true;
@@ -312,11 +319,10 @@ export class AuthService {
 
   // Doc 03 §7, §10 / doc 05 §3.1. `sid`/`rt` vêm do cookie `mv_rt`
   // (`${sid}.${rt}`, convenção da task 7), já separados pelo controller.
-  // `SessionService.rotate` é single-use com detecção de reuso/roubo: uma
-  // chamada com um `rt` já rotacionado (ou desconhecido) devolve `null` E
-  // destrói a sessão — não fraqueamos esse contrato aqui. As claims do novo
-  // access token são recarregadas do banco (não do token antigo) para
-  // refletir `role`/`teamDisabled` atuais.
+  // `SessionService.rotate` aceita duplicatas apenas na janela curta de
+  // concorrência; fora dela, um `rt` rotacionado (ou desconhecido) devolve
+  // `null` e destrói a sessão. As claims do novo access token são recarregadas
+  // do banco (não do token antigo) para refletir `role`/`teamDisabled` atuais.
   async refresh(sid: string, rt: string): Promise<RefreshResult> {
     const rotated = await this.sessionService.rotate(sid, rt);
     if (!rotated) {
@@ -368,26 +374,49 @@ export class AuthService {
   // nenhum.
   async forgotPassword(email: string): Promise<{ ok: true }> {
     const normalizedEmail = (email ?? '').trim().toLowerCase();
-    if (normalizedEmail) {
-      const user = await this.usersService.findByEmail(normalizedEmail);
-      if (user) {
-        const token = randomBytes(32).toString('base64url');
-        const tokenHash = sha256(token);
+    if (!normalizedEmail) return { ok: true };
 
-        await this.redisService.client.set(
-          pwdResetKey(tokenHash),
-          user.id,
-          'EX',
-          PWD_RESET_TTL_SECONDS,
-        );
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (user) {
+      await this.sendResetLink(user.email, user.id);
+      return { ok: true };
+    }
 
-        const appUrl = this.config.get('APP_URL', { infer: true });
-        const link = `${appUrl}/redefinir-senha?token=${token}`;
-        await this.mailService.sendPasswordReset(user.email, link);
-      }
+    // Legado WordPress que nunca logou ainda não tem conta em `users`; a
+    // redefinição conclui a migração dele com a senha nova.
+    const legacy = await this.prisma.wpUserLegacy.findFirst({
+      where: {
+        userEmail: { equals: normalizedEmail, mode: 'insensitive' },
+        migrated: false,
+      },
+    });
+    if (legacy?.userEmail) {
+      await this.sendResetLink(
+        legacy.userEmail.toLowerCase(),
+        `${LEGACY_RESET_PREFIX}${legacy.id}`,
+      );
     }
 
     return { ok: true };
+  }
+
+  private async sendResetLink(email: string, subject: string): Promise<void> {
+    const token = randomBytes(32).toString('base64url');
+
+    await this.redisService.client.set(
+      pwdResetKey(sha256(token)),
+      subject,
+      'EX',
+      PWD_RESET_TTL_SECONDS,
+    );
+
+    // `new URL` absorve a barra final que o APP_URL pode ter no ambiente.
+    const resetLink = new URL(
+      '/redefinir-senha',
+      this.config.get('APP_URL', { infer: true }),
+    );
+    resetLink.searchParams.set('token', token);
+    await this.mailService.sendPasswordReset(email, resetLink.toString());
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
@@ -403,20 +432,59 @@ export class AuthService {
     }
 
     const key = pwdResetKey(sha256(token ?? ''));
-    const userId = await this.redisService.client.get(key);
-    if (!userId) {
+    const subject = await this.redisService.client.get(key);
+    if (!subject) {
       throw new BadRequestException({ error: 'Link inválido ou expirado' });
     }
 
-    const passwordHash = await this.passwordService.hash(normalizedPassword);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { passwordHash },
-    });
+    const userId = subject.startsWith(LEGACY_RESET_PREFIX)
+      ? await this.resetLegacyPassword(
+          BigInt(subject.slice(LEGACY_RESET_PREFIX.length)),
+          normalizedPassword,
+        )
+      : await this.setNewPassword(subject, normalizedPassword);
+
     await this.redisService.client.del(key);
     await this.sessionService.revokeAll(userId);
 
     return { ok: true };
+  }
+
+  private async setNewPassword(
+    userId: string,
+    plainPassword: string,
+  ): Promise<string> {
+    const passwordHash = await this.passwordService.hash(plainPassword);
+    await this.legacyMigrationService.setPassword(userId, passwordHash);
+    return userId;
+  }
+
+  // Entre o pedido e o uso do link o usuário pode ter logado com a senha do
+  // WordPress, o que já criou a conta; nesse caso só a senha muda.
+  private async resetLegacyPassword(
+    legacyId: bigint,
+    plainPassword: string,
+  ): Promise<string> {
+    const legacy = await this.prisma.wpUserLegacy.findUnique({
+      where: { id: legacyId },
+    });
+    const existingUser = legacy?.userEmail
+      ? await this.usersService.findByEmail(legacy.userEmail)
+      : null;
+
+    if (legacy && !legacy.migrated) {
+      const user = await this.legacyMigrationService.migrate(
+        legacy,
+        plainPassword,
+        existingUser,
+      );
+      return user.id;
+    }
+
+    if (!existingUser) {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+    return this.setNewPassword(existingUser.id, plainPassword);
   }
 
   // Doc 03 §10 / doc 05 §3.1. Exige sessão (`claims` vem do cookie `mv_at`,
@@ -452,30 +520,36 @@ export class AuthService {
     }
 
     const passwordHash = await this.passwordService.hash(normalizedNewPassword);
-    await this.prisma.user.update({
-      where: { id: (user as User).id },
-      data: { passwordHash },
-    });
+    await this.legacyMigrationService.setPassword(
+      (user as User).id,
+      passwordHash,
+    );
     await this.sessionService.revokeAll(claims.sub, claims.sid);
 
     return { ok: true };
   }
 
   // Rehash de senha legada gravada em `users.passwordHash` (import parcial —
-  // doc 03 §8). Falha aqui NÃO bloqueia o login (doc 03 §5): apenas loga e
-  // segue, pois a senha já foi validada contra o hash antigo.
-  private async rehash(userId: string, plainPassword: string): Promise<void> {
+  // doc 03 §8). Falha de persistência não bloqueia o login, mas um hash
+  // alterado por outra operação invalida esta tentativa de autenticação.
+  private async rehash(
+    userId: string,
+    plainPassword: string,
+    previousHash: string,
+  ): Promise<boolean> {
     try {
       const newHash = await this.passwordService.hash(plainPassword);
-      await this.prisma.user.update({
-        where: { id: userId },
+      const updated = await this.prisma.user.updateMany({
+        where: { id: userId, passwordHash: previousHash },
         data: { passwordHash: newHash },
       });
+      return updated.count === 1;
     } catch (err) {
       this.logger.error(
         `Falha ao regravar passwordHash do usuário ${userId} após rehash`,
         err instanceof Error ? err.stack : String(err),
       );
+      return true;
     }
   }
 }

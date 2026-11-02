@@ -10,8 +10,12 @@ import cookieParser from 'cookie-parser';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
 import { RedisService } from './../src/redis/redis.service';
+import { refreshRotationGraceKey } from './../src/redis/session.keys';
 import { TokenService } from './../src/auth/jwt/token.service';
+import { AuthService } from './../src/auth/auth.service';
+import { PasswordService } from './../src/auth/password/password.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
+import { MailService } from './../src/mail/mail.service';
 
 // Doc 03 §12 (docs/nestjs-migration/03-auth-e-senhas.md, front repo): the 16
 // login edge cases, exercised end-to-end against the REAL Postgres (mv-pg,
@@ -443,7 +447,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     userIds.push(user12.id);
 
-    // ---- Case 13: refresh reuse ----
+    // ---- Case 13: concurrent refresh and outside-grace reuse ----
     const user13 = await prisma.user.create({
       data: {
         email: EMAIL(13),
@@ -756,7 +760,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     expect(claims?.isTeamOnly).toBe(true);
   });
 
-  it('Case 13: refresh reuse revokes the session and returns 401', async () => {
+  it('Case 13: concurrent refreshes converge, then reuse outside grace revokes', async () => {
     const loginRes = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ email: EMAIL(13), password: CASE13_PW })
@@ -772,33 +776,59 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     trackSession(sid, user13!.id);
 
-    // First refresh: legitimate, rotates rt1 -> rt2.
-    const refresh1 = await request(app.getHttpServer())
-      .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt1}`])
-      .expect(200);
+    const [refresh1, refresh2] = await Promise.all([
+      request(app.getHttpServer())
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', [`mv_rt=${rt1}`])
+        .expect(200),
+      request(app.getHttpServer())
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', [`mv_rt=${rt1}`])
+        .expect(200),
+    ]);
     expect(refresh1.body).toEqual({ ok: true });
+    expect(refresh2.body).toEqual({ ok: true });
     const refresh1Cookies = refresh1.headers[
       'set-cookie'
     ] as unknown as CookieJar;
+    const refresh2Cookies = refresh2.headers[
+      'set-cookie'
+    ] as unknown as CookieJar;
     const rt2 = extractCookie(refresh1Cookies, 'mv_rt');
+    const duplicateRt2 = extractCookie(refresh2Cookies, 'mv_rt');
     expect(rt2).toBeTruthy();
     expect(rt2).not.toBe(rt1);
+    expect(duplicateRt2).toBe(rt2);
 
-    // Reuse of the already-rotated rt1: theft detection, session revoked, 401.
-    const refresh2 = await request(app.getHttpServer())
+    const refresh3 = await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt1}`])
+      .set('Cookie', [`mv_rt=${rt2}`])
+      .expect(200);
+    const rt3 = extractCookie(
+      refresh3.headers['set-cookie'] as unknown as CookieJar,
+      'mv_rt',
+    );
+    expect(rt3).toBeTruthy();
+
+    const rt1Token = rt1!.slice(rt1!.indexOf('.') + 1);
+    const rt2Token = rt2!.slice(rt2!.indexOf('.') + 1);
+    await redis.client.del(
+      refreshRotationGraceKey(sid, sha256(rt1Token)),
+      refreshRotationGraceKey(sid, sha256(rt2Token)),
+    );
+
+    const outsideGraceReuse = await request(app.getHttpServer())
+      .post('/api/v1/auth/refresh')
+      .set('Cookie', [`mv_rt=${rt2}`])
       .expect(401);
-    expect(refresh2.body).toEqual({ error: 'Sessão expirada' });
+    expect(outsideGraceReuse.body).toEqual({ error: 'Sessão expirada' });
 
     const sessionAfter = await redis.client.get(`sess:${sid}`);
     expect(sessionAfter).toBeNull();
 
-    // Even the freshly-rotated rt2 is dead now (revoke() nukes the sid).
     await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
-      .set('Cookie', [`mv_rt=${rt2}`])
+      .set('Cookie', [`mv_rt=${rt3}`])
       .expect(401);
   });
 
@@ -837,6 +867,162 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
   });
 
+  it.each(['reset', 'change'] as const)(
+    '%s closes legacy fallback and keeps pending shelter/volunteer links',
+    async (operation) => {
+      const caseNo = operation === 'reset' ? 17 : 18;
+      const legacyId = BigInt(900000 + caseNo);
+      const shelterPostId = 900000 + caseNo * 10;
+      const volunteerPostId = shelterPostId + 1;
+      const email = EMAIL(caseNo);
+      const user = await prisma.user.create({
+        data: {
+          email,
+          passwordHash: await bcrypt.hash('CurrentPassword123', 4),
+        },
+      });
+      userIds.push(user.id);
+      legacyIds.push(legacyId);
+      await prisma.wpUserLegacy.create({
+        data: {
+          id: legacyId,
+          userLogin: `case${caseNo}`,
+          userEmail: email,
+          userPass: buildMd5Hash('OldWordPress123'),
+          migrated: false,
+        },
+      });
+      for (const [id, postType] of [
+        [shelterPostId, 'abrigo'],
+        [volunteerPostId, 'voluntario'],
+      ] as const) {
+        postIds.push(BigInt(id));
+        await prisma.wpPostRaw.create({
+          data: {
+            id: BigInt(id),
+            postAuthor: legacyId,
+            postType,
+            postStatus: 'publish',
+          },
+        });
+      }
+      shelterWpPostIds.push(shelterPostId);
+      volunteerWpPostIds.push(volunteerPostId);
+      await createUnlinkedShelter(`Case ${caseNo}`, shelterPostId);
+      await prisma.volunteer.create({
+        data: { wpPostId: volunteerPostId, name: `Case ${caseNo}` },
+      });
+
+      const previous = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'CurrentPassword123' })
+        .expect(200);
+      if (operation === 'reset') {
+        const token = randomBytes(32).toString('base64url');
+        const key = `pwdreset:${sha256(token)}`;
+        redisPwdResetKeys.push(key);
+        await redis.client.set(key, user.id, 'EX', 60);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/reset-password')
+          .send({ token, password: 'NewPassword123' })
+          .expect(200);
+      } else {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/change-password')
+          .set('Cookie', previous.headers['set-cookie'] as unknown as string[])
+          .send({
+            currentPassword: 'CurrentPassword123',
+            newPassword: 'NewPassword123',
+          })
+          .expect(200);
+      }
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'OldWordPress123' })
+        .expect(401);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'NewPassword123' })
+        .expect(200);
+      expect(
+        (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
+          ?.migrated,
+      ).toBe(true);
+      expect(
+        (
+          await prisma.shelter.findUnique({
+            where: { wpPostId: shelterPostId },
+          })
+        )?.profileId,
+      ).toBe(user.id);
+      expect(
+        (
+          await prisma.volunteer.findUnique({
+            where: { wpPostId: volunteerPostId },
+          })
+        )?.ownerProfileId,
+      ).toBe(user.id);
+      expect(
+        (await prisma.user.findUnique({ where: { id: user.id } }))?.wpUserId,
+      ).toBe(Number(legacyId));
+    },
+  );
+
+  it('rejects a stale rehash if a password reset completes while bcrypt is running', async () => {
+    const user = await prisma.user.create({
+      data: { email: EMAIL(19), passwordHash: buildMd5Hash('OldPassword123') },
+    });
+    userIds.push(user.id);
+    const passwords = app.get(PasswordService);
+    const originalHash = passwords.hash.bind(
+      passwords,
+    ) as PasswordService['hash'];
+    let resume!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const spy = jest
+      .spyOn(passwords, 'hash')
+      .mockImplementation(async (plain) => {
+        if (plain === 'OldPassword123') {
+          started();
+          await blocked;
+        }
+        return originalHash(plain);
+      });
+    const auth = app.get(AuthService);
+    const pending = auth.login(user.email, 'OldPassword123');
+    // A rejeição pode ocorrer assim que o bcrypt for liberado.
+    const outcome = pending.then(
+      () => 200,
+      (error: unknown) => (error as { status: number }).status,
+    );
+    try {
+      await entered;
+      const token = randomBytes(32).toString('base64url');
+      const key = `pwdreset:${sha256(token)}`;
+      redisPwdResetKeys.push(key);
+      await redis.client.set(key, user.id, 'EX', 60);
+      await auth.resetPassword(token, 'NewPassword123');
+      resume();
+      expect(await outcome).toBe(401);
+      const saved = await prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+      });
+      expect(await bcrypt.compare('NewPassword123', saved.passwordHash!)).toBe(
+        true,
+      );
+    } finally {
+      resume();
+      await outcome;
+      spy.mockRestore();
+    }
+  });
+
   it('Case 16: legacy has BOTH abrigo and voluntario posts -> links both', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
@@ -863,5 +1049,92 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     expect(shelter?.profileId).toBe(user!.id);
     expect(volunteer?.ownerProfileId).toBe(user!.id);
+  });
+
+  it('legacy user without account resets the password via e-mail link and gets migrated', async () => {
+    const legacyId = 900099n;
+    const postId = 900099n;
+    const oldWpPassword = 'Case99OldWpPass!';
+    const newPassword = 'Case99NewPass!';
+    legacyIds.push(legacyId);
+    postIds.push(postId);
+    await prisma.wpUserLegacy.create({
+      data: {
+        id: legacyId,
+        userLogin: 'e2ecase99',
+        userEmail: EMAIL(99).toUpperCase(),
+        userPass: buildPhpassHash(oldWpPassword),
+        displayName: 'E2E Case 99',
+        migrated: false,
+      },
+    });
+    await prisma.wpPostRaw.create({
+      data: {
+        id: postId,
+        postAuthor: legacyId,
+        postType: 'abrigo',
+        postStatus: 'publish',
+        postTitle: 'E2E Case 99 Shelter',
+      },
+    });
+    await createUnlinkedShelter('E2E Case 99 Shelter', 900099);
+    shelterWpPostIds.push(900099);
+
+    const sendPasswordReset = jest
+      .spyOn(app.get(MailService), 'sendPasswordReset')
+      .mockResolvedValue(undefined);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: EMAIL(99) })
+      .expect(200);
+
+    expect(sendPasswordReset).toHaveBeenCalledTimes(1);
+    const [sentTo, link] = sendPasswordReset.mock.calls[0];
+    sendPasswordReset.mockRestore();
+    expect(sentTo).toBe(EMAIL(99));
+    const token = new URL(link).searchParams.get('token') as string;
+    redisPwdResetKeys.push(
+      `pwdreset:${createHash('sha256').update(token).digest('hex')}`,
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/reset-password')
+      .send({ token, password: newPassword })
+      .expect(200);
+
+    const user = await prisma.user.findUnique({ where: { email: EMAIL(99) } });
+    expect(user?.wpUserId).toBe(900099);
+    expect(user?.role).toBe('abrigo');
+    if (user) userIds.push(user.id);
+
+    const legacy = await prisma.wpUserLegacy.findUnique({
+      where: { id: legacyId },
+    });
+    expect(legacy?.migrated).toBe(true);
+    const shelter = await prisma.shelter.findUnique({
+      where: { wpPostId: 900099 },
+    });
+    expect(shelter?.profileId).toBe(user!.id);
+
+    const login = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: EMAIL(99), password: newPassword })
+      .expect(200);
+    expect(login.body).toEqual({
+      ok: true,
+      migrated: true,
+      postType: 'abrigo',
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: EMAIL(99), password: oldWpPassword })
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/reset-password')
+      .send({ token, password: 'AnotherPass!' })
+      .expect(400);
   });
 });

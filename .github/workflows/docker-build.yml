@@ -1,0 +1,257 @@
+name: Build and deploy Docker image
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mv
+          POSTGRES_PASSWORD: mv
+          POSTGRES_DB: mvabrigos
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://mv:mv@localhost:5432/mvabrigos?schema=public
+      REDIS_URL: redis://localhost:6379/0
+      REDIS_TEST_URL: redis://localhost:6379/15
+      AUTH_JWT_SECRET: ci-secret-ci-secret-ci-secret-ci-secret-00
+      APP_URL: http://localhost:3000
+      COOKIE_SECURE: 'false'
+      MAIL_FROM: 'MV Abrigos <no-reply@mvabrigosbrasil.com.br>'
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Validate deployment branch
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          case "$GITHUB_REF_NAME" in develop|main) ;; *) echo "Branch sem ambiente de deploy."; exit 1 ;; esac
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm install -g npm@11.6.2
+      - run: npm ci --no-audit --no-fund
+      - run: npm audit --audit-level=high
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --runInBand
+      - run: npm run test:import -- --runInBand
+      - run: npm run test:e2e
+      - run: npm run build
+
+  verify-image:
+    if: github.event_name == 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: mv
+          POSTGRES_PASSWORD: mv
+          POSTGRES_DB: mvabrigos
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - run: docker build --build-arg APP_REVISION="$GITHUB_SHA" --tag local/backend:${{ github.sha }} .
+      - name: Verify production container and generated Prisma Client
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "local/backend:$GITHUB_SHA" -c 'test "$(id -u)" != 0 && ! command -v npm'
+          docker run --rm --entrypoint node "local/backend:$GITHUB_SHA" -e "require('./dist/src/generated/prisma/client.js'); require('@prisma/adapter-pg')"
+          docker run --rm --network host \
+            -e DATABASE_URL='postgresql://mv:mv@127.0.0.1:5432/mvabrigos?schema=public' \
+            --entrypoint ./node_modules/.bin/prisma \
+            "local/backend:$GITHUB_SHA" migrate deploy
+          container_id="$(docker run --detach --network host \
+            -e DATABASE_URL='postgresql://mv:mv@127.0.0.1:5432/mvabrigos?schema=public' \
+            -e REDIS_URL='redis://127.0.0.1:6379' \
+            -e APP_URL='http://localhost:3000' \
+            -e AUTH_JWT_SECRET='ci-secret-ci-secret-ci-secret-ci-secret-00' \
+            "local/backend:$GITHUB_SHA")"
+          trap 'docker rm --force "$container_id" >/dev/null' EXIT
+          for attempt in $(seq 1 20); do
+            http_response="$(curl --silent --show-error --connect-timeout 2 --max-time 5 --write-out '\n%{http_code}' http://127.0.0.1:3001/api/v1/health)" || http_response=""
+            http_status="${http_response##*$'\n'}"
+            response="${http_response%$'\n'*}"
+            if [[ "$http_status" == 200 ]] && jq --exit-status --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision' <<< "$response" > /dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 20 ]]; then
+              sleep 3
+            fi
+          done
+          docker logs "$container_id"
+          exit 1
+      - uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297
+        with:
+          image-ref: local/backend:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+  build-and-push:
+    if: github.event_name != 'pull_request'
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Normalize image name
+        id: image
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.image }}
+          tags: |
+            type=sha,format=long,prefix=sha-
+            type=raw,value=dev,enable=${{ github.ref_name == 'develop' }}
+            type=raw,value=prd,enable=${{ github.ref_name == 'main' }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        id: build
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: APP_REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  scan-image:
+    if: github.event_name != 'pull_request'
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297
+        with:
+          image-ref: ${{ needs.build-and-push.outputs.image }}@${{ needs.build-and-push.outputs.digest }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: [build-and-push, scan-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    environment:
+      name: ${{ github.ref_name == 'develop' && 'development' || 'production' }}
+    env:
+      IMAGE: ${{ needs.build-and-push.outputs.image }}
+      IMAGE_DIGEST: ${{ needs.build-and-push.outputs.digest }}
+      WEBHOOK_URL: ${{ secrets.DOKPLOY_WEBHOOK_URL }}
+      HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify environment image and trigger Dokploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$GITHUB_REF_NAME" in
+            develop) tag=dev ;;
+            main) tag=prd ;;
+            *) exit 1 ;;
+          esac
+          test -n "$WEBHOOK_URL"
+          test -n "$HEALTHCHECK_URL"
+          test -n "$IMAGE_DIGEST"
+          sha_digest="$(docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA" --format '{{.Manifest.Digest}}')"
+          tag_digest="$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{.Manifest.Digest}}')"
+          if [[ "$sha_digest" != "$IMAGE_DIGEST" || "$tag_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "A tag do ambiente não aponta para a imagem aprovada desta execução."
+            exit 1
+          fi
+          if ! webhook_status="$(curl --fail-with-body --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 --silent --show-error --output /dev/null --write-out '%{http_code}' "$WEBHOOK_URL")"; then
+            echo "O webhook do Dokploy falhou com HTTP $webhook_status."
+            exit 1
+          fi
+          if [[ ! "$webhook_status" =~ ^2[0-9][0-9]$ ]]; then
+            echo "O webhook do Dokploy respondeu HTTP $webhook_status; esperado HTTP 2xx."
+            exit 1
+          fi
+      - name: Verify deployed backend
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="${HEALTHCHECK_URL%/}/api/v1/health"
+          for attempt in $(seq 1 40); do
+            http_response="$(curl --silent --show-error --connect-timeout 10 --max-time 15 --write-out '\n%{http_code}' "$url")" || http_response=""
+            http_status="${http_response##*$'\n'}"
+            response="${http_response%$'\n'*}"
+            if [[ "$http_status" == 200 ]] && jq --exit-status --arg revision "$GITHUB_SHA" '.status == "ok" and .revision == $revision' <<< "$response" > /dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 40 ]]; then
+              sleep 5
+            fi
+          done
+          echo "O backend não respondeu com a revisão $GITHUB_SHA após 40 tentativas."
+          exit 1

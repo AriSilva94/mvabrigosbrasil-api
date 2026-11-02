@@ -11,6 +11,8 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { isInternalRequest } from '../common/utils/internal-request';
+import type { Request } from 'express';
 
 // Task 11: módulo agora "completo" — `JwtAuthGuard` e `RolesGuard` (Task 4)
 // são registrados como `APP_GUARD` globais, então TODA rota da API exige
@@ -38,13 +40,17 @@ import { RolesGuard } from './guards/roles.guard';
     JwtAuthModule,
     PrismaModule,
     MailModule,
-    ThrottlerModule.forRoot([
-      {
-        name: 'default',
-        ttl: 60_000,
-        limit: 100,
-      },
-    ]),
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          name: 'default',
+          ttl: 60_000,
+          limit: 100,
+        },
+      ],
+      skipIf: (context) =>
+        isInternalRequest(context.switchToHttp().getRequest<Request>()),
+    }),
   ],
   controllers: [AuthController],
   providers: [

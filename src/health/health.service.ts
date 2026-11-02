@@ -4,6 +4,7 @@ import { RedisService } from '../redis/redis.service';
 
 export type HealthStatus = {
   status: 'ok' | 'degraded';
+  revision: string;
   db: 'up' | 'down';
   redis: 'up' | 'down';
 };
@@ -47,6 +48,7 @@ export class HealthService {
       .catch(() => 'down' as const);
     return {
       status: db === 'up' && redis === 'up' ? 'ok' : 'degraded',
+      revision: process.env.APP_REVISION ?? 'local',
       db,
       redis,
     };

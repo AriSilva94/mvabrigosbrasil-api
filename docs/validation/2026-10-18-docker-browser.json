@@ -1,0 +1,155 @@
+{
+  "checks": 37,
+  "pageErrors": [],
+  "supabaseRequests": 0,
+  "results": [
+    {
+      "check": "desktop /",
+      "status": "passed"
+    },
+    {
+      "check": "desktop /login",
+      "status": "passed"
+    },
+    {
+      "check": "desktop /banco-de-dados",
+      "status": "passed"
+    },
+    {
+      "check": "desktop /programa-de-voluntarios",
+      "status": "passed"
+    },
+    {
+      "check": "desktop anonymous protection",
+      "status": "passed"
+    },
+    {
+      "check": "mobile /",
+      "status": "passed"
+    },
+    {
+      "check": "mobile /login",
+      "status": "passed"
+    },
+    {
+      "check": "mobile /banco-de-dados",
+      "status": "passed"
+    },
+    {
+      "check": "mobile /programa-de-voluntarios",
+      "status": "passed"
+    },
+    {
+      "check": "mobile anonymous protection",
+      "status": "passed"
+    },
+    {
+      "check": "shelter panel",
+      "status": "passed"
+    },
+    {
+      "check": "shelter /meu-cadastro",
+      "status": "passed"
+    },
+    {
+      "check": "shelter /dinamica-populacional",
+      "status": "passed"
+    },
+    {
+      "check": "shelter /minhas-vagas",
+      "status": "passed"
+    },
+    {
+      "check": "shelter /equipe",
+      "status": "passed"
+    },
+    {
+      "check": "refresh via SSR proxy",
+      "status": "passed"
+    },
+    {
+      "check": "password change rejects old password",
+      "status": "passed"
+    },
+    {
+      "check": "shelter logout",
+      "status": "passed"
+    },
+    {
+      "check": "volunteer panel",
+      "status": "passed"
+    },
+    {
+      "check": "volunteer /meu-cadastro",
+      "status": "passed"
+    },
+    {
+      "check": "volunteer /vagas",
+      "status": "passed"
+    },
+    {
+      "check": "volunteer logout",
+      "status": "passed"
+    },
+    {
+      "check": "admin panel",
+      "status": "passed"
+    },
+    {
+      "check": "admin /admin/abrigos",
+      "status": "passed"
+    },
+    {
+      "check": "admin /admin/gerentes",
+      "status": "passed"
+    },
+    {
+      "check": "admin logout",
+      "status": "passed"
+    },
+    {
+      "check": "active-team panel",
+      "status": "passed"
+    },
+    {
+      "check": "active-team logout",
+      "status": "passed"
+    },
+    {
+      "check": "disabled-team panel",
+      "status": "passed"
+    },
+    {
+      "check": "disabled team write blocked",
+      "status": "passed"
+    },
+    {
+      "check": "disabled-team logout",
+      "status": "passed"
+    },
+    {
+      "check": "wp panel",
+      "status": "passed"
+    },
+    {
+      "check": "wp logout",
+      "status": "passed"
+    },
+    {
+      "check": "phpass panel",
+      "status": "passed"
+    },
+    {
+      "check": "phpass logout",
+      "status": "passed"
+    },
+    {
+      "check": "md5 panel",
+      "status": "passed"
+    },
+    {
+      "check": "md5 logout",
+      "status": "passed"
+    }
+  ]
+}
