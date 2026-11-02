@@ -15,6 +15,7 @@ import { TokenService } from './../src/auth/jwt/token.service';
 import { AuthService } from './../src/auth/auth.service';
 import { PasswordService } from './../src/auth/password/password.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
+import { MailService } from './../src/mail/mail.service';
 
 // Doc 03 §12 (docs/nestjs-migration/03-auth-e-senhas.md, front repo): the 16
 // login edge cases, exercised end-to-end against the REAL Postgres (mv-pg,
@@ -1048,5 +1049,92 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
     expect(shelter?.profileId).toBe(user!.id);
     expect(volunteer?.ownerProfileId).toBe(user!.id);
+  });
+
+  it('legacy user without account resets the password via e-mail link and gets migrated', async () => {
+    const legacyId = 900099n;
+    const postId = 900099n;
+    const oldWpPassword = 'Case99OldWpPass!';
+    const newPassword = 'Case99NewPass!';
+    legacyIds.push(legacyId);
+    postIds.push(postId);
+    await prisma.wpUserLegacy.create({
+      data: {
+        id: legacyId,
+        userLogin: 'e2ecase99',
+        userEmail: EMAIL(99).toUpperCase(),
+        userPass: buildPhpassHash(oldWpPassword),
+        displayName: 'E2E Case 99',
+        migrated: false,
+      },
+    });
+    await prisma.wpPostRaw.create({
+      data: {
+        id: postId,
+        postAuthor: legacyId,
+        postType: 'abrigo',
+        postStatus: 'publish',
+        postTitle: 'E2E Case 99 Shelter',
+      },
+    });
+    await createUnlinkedShelter('E2E Case 99 Shelter', 900099);
+    shelterWpPostIds.push(900099);
+
+    const sendPasswordReset = jest
+      .spyOn(app.get(MailService), 'sendPasswordReset')
+      .mockResolvedValue(undefined);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/forgot-password')
+      .send({ email: EMAIL(99) })
+      .expect(200);
+
+    expect(sendPasswordReset).toHaveBeenCalledTimes(1);
+    const [sentTo, link] = sendPasswordReset.mock.calls[0];
+    sendPasswordReset.mockRestore();
+    expect(sentTo).toBe(EMAIL(99));
+    const token = new URL(link).searchParams.get('token') as string;
+    redisPwdResetKeys.push(
+      `pwdreset:${createHash('sha256').update(token).digest('hex')}`,
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/reset-password')
+      .send({ token, password: newPassword })
+      .expect(200);
+
+    const user = await prisma.user.findUnique({ where: { email: EMAIL(99) } });
+    expect(user?.wpUserId).toBe(900099);
+    expect(user?.role).toBe('abrigo');
+    if (user) userIds.push(user.id);
+
+    const legacy = await prisma.wpUserLegacy.findUnique({
+      where: { id: legacyId },
+    });
+    expect(legacy?.migrated).toBe(true);
+    const shelter = await prisma.shelter.findUnique({
+      where: { wpPostId: 900099 },
+    });
+    expect(shelter?.profileId).toBe(user!.id);
+
+    const login = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: EMAIL(99), password: newPassword })
+      .expect(200);
+    expect(login.body).toEqual({
+      ok: true,
+      migrated: true,
+      postType: 'abrigo',
+    });
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email: EMAIL(99), password: oldWpPassword })
+      .expect(401);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/reset-password')
+      .send({ token, password: 'AnotherPass!' })
+      .expect(400);
   });
 });

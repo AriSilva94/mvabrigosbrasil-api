@@ -32,6 +32,7 @@ function pwdResetKey(tokenHash: string): string {
 
 // Doc 03 §10: link válido por 60 minutos, uso único.
 const PWD_RESET_TTL_SECONDS = 60 * 60;
+const LEGACY_RESET_PREFIX = 'legacy:';
 const MIN_PASSWORD_LENGTH = 6;
 
 export type LoginResult = {
@@ -373,26 +374,47 @@ export class AuthService {
   // nenhum.
   async forgotPassword(email: string): Promise<{ ok: true }> {
     const normalizedEmail = (email ?? '').trim().toLowerCase();
-    if (normalizedEmail) {
-      const user = await this.usersService.findByEmail(normalizedEmail);
-      if (user) {
-        const token = randomBytes(32).toString('base64url');
-        const tokenHash = sha256(token);
+    if (!normalizedEmail) return { ok: true };
 
-        await this.redisService.client.set(
-          pwdResetKey(tokenHash),
-          user.id,
-          'EX',
-          PWD_RESET_TTL_SECONDS,
-        );
+    const user = await this.usersService.findByEmail(normalizedEmail);
+    if (user) {
+      await this.sendResetLink(user.email, user.id);
+      return { ok: true };
+    }
 
-        const appUrl = this.config.get('APP_URL', { infer: true });
-        const link = `${appUrl}/redefinir-senha?token=${token}`;
-        await this.mailService.sendPasswordReset(user.email, link);
-      }
+    // Legado WordPress que nunca logou ainda não tem conta em `users`; a
+    // redefinição conclui a migração dele com a senha nova.
+    const legacy = await this.prisma.wpUserLegacy.findFirst({
+      where: {
+        userEmail: { equals: normalizedEmail, mode: 'insensitive' },
+        migrated: false,
+      },
+    });
+    if (legacy?.userEmail) {
+      await this.sendResetLink(
+        legacy.userEmail.toLowerCase(),
+        `${LEGACY_RESET_PREFIX}${legacy.id}`,
+      );
     }
 
     return { ok: true };
+  }
+
+  private async sendResetLink(email: string, subject: string): Promise<void> {
+    const token = randomBytes(32).toString('base64url');
+
+    await this.redisService.client.set(
+      pwdResetKey(sha256(token)),
+      subject,
+      'EX',
+      PWD_RESET_TTL_SECONDS,
+    );
+
+    const appUrl = this.config.get('APP_URL', { infer: true });
+    await this.mailService.sendPasswordReset(
+      email,
+      `${appUrl}/redefinir-senha?token=${token}`,
+    );
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
@@ -408,17 +430,59 @@ export class AuthService {
     }
 
     const key = pwdResetKey(sha256(token ?? ''));
-    const userId = await this.redisService.client.get(key);
-    if (!userId) {
+    const subject = await this.redisService.client.get(key);
+    if (!subject) {
       throw new BadRequestException({ error: 'Link inválido ou expirado' });
     }
 
-    const passwordHash = await this.passwordService.hash(normalizedPassword);
-    await this.legacyMigrationService.setPassword(userId, passwordHash);
+    const userId = subject.startsWith(LEGACY_RESET_PREFIX)
+      ? await this.resetLegacyPassword(
+          BigInt(subject.slice(LEGACY_RESET_PREFIX.length)),
+          normalizedPassword,
+        )
+      : await this.setNewPassword(subject, normalizedPassword);
+
     await this.redisService.client.del(key);
     await this.sessionService.revokeAll(userId);
 
     return { ok: true };
+  }
+
+  private async setNewPassword(
+    userId: string,
+    plainPassword: string,
+  ): Promise<string> {
+    const passwordHash = await this.passwordService.hash(plainPassword);
+    await this.legacyMigrationService.setPassword(userId, passwordHash);
+    return userId;
+  }
+
+  // Entre o pedido e o uso do link o usuário pode ter logado com a senha do
+  // WordPress, o que já criou a conta; nesse caso só a senha muda.
+  private async resetLegacyPassword(
+    legacyId: bigint,
+    plainPassword: string,
+  ): Promise<string> {
+    const legacy = await this.prisma.wpUserLegacy.findUnique({
+      where: { id: legacyId },
+    });
+    const existingUser = legacy?.userEmail
+      ? await this.usersService.findByEmail(legacy.userEmail)
+      : null;
+
+    if (legacy && !legacy.migrated) {
+      const user = await this.legacyMigrationService.migrate(
+        legacy,
+        plainPassword,
+        existingUser,
+      );
+      return user.id;
+    }
+
+    if (!existingUser) {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+    return this.setNewPassword(existingUser.id, plainPassword);
   }
 
   // Doc 03 §10 / doc 05 §3.1. Exige sessão (`claims` vem do cookie `mv_at`,
