@@ -4,12 +4,18 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { ChatAccessService } from './chat-access.service';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
+import { ChatMessagesService } from './chat-messages.service';
 import { ChatThreadsService } from './chat-threads.service';
 
 @Module({
   imports: [JwtAuthModule, PrismaModule],
   controllers: [ChatController],
-  providers: [ChatGateway, ChatAccessService, ChatThreadsService],
+  providers: [
+    ChatGateway,
+    ChatAccessService,
+    ChatThreadsService,
+    ChatMessagesService,
+  ],
   exports: [ChatGateway, ChatAccessService, ChatThreadsService],
 })
 export class ChatModule {}

@@ -1,11 +1,27 @@
-import { Controller, Get } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user';
 import type { Claims } from '../auth/jwt/token.service';
+import { ChatMessagesService } from './chat-messages.service';
 import { ChatThreadsService } from './chat-threads.service';
+
+type ContentBody = { content?: unknown } | undefined;
 
 @Controller('chat')
 export class ChatController {
-  constructor(private readonly threads: ChatThreadsService) {}
+  constructor(
+    private readonly threads: ChatThreadsService,
+    private readonly messages: ChatMessagesService,
+  ) {}
 
   @Get('threads')
   async listThreads(@CurrentUser() claims: Claims) {
@@ -15,5 +31,58 @@ export class ChatController {
   @Get('unread-count')
   async unreadCount(@CurrentUser() claims: Claims) {
     return { count: await this.threads.totalUnread(claims.sub) };
+  }
+
+  @Get('threads/:id/messages')
+  listMessages(
+    @CurrentUser() claims: Claims,
+    @Param('id') threadId: string,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.messages.list(
+      claims.sub,
+      threadId,
+      cursor || undefined,
+      limit ? Number(limit) : undefined,
+    );
+  }
+
+  @Post('threads/:id/messages')
+  @HttpCode(HttpStatus.OK)
+  async sendMessage(
+    @CurrentUser() claims: Claims,
+    @Param('id') threadId: string,
+    @Body() body: ContentBody,
+  ) {
+    const message = await this.messages.send(
+      claims.sub,
+      threadId,
+      body?.content,
+    );
+    return { message, success: true };
+  }
+
+  @Patch('threads/:id/messages/:messageId')
+  async editMessage(
+    @CurrentUser() claims: Claims,
+    @Param('id') threadId: string,
+    @Param('messageId') messageId: string,
+    @Body() body: ContentBody,
+  ) {
+    const message = await this.messages.edit(
+      claims.sub,
+      threadId,
+      messageId,
+      body?.content,
+    );
+    return { message, success: true };
+  }
+
+  @Post('threads/:id/read')
+  @HttpCode(HttpStatus.OK)
+  async markRead(@CurrentUser() claims: Claims, @Param('id') threadId: string) {
+    const { unread_count } = await this.messages.markRead(claims.sub, threadId);
+    return { success: true, unread_count };
   }
 }
