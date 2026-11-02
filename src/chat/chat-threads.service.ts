@@ -182,6 +182,24 @@ export class ChatThreadsService {
     return Object.fromEntries(rows.map((row) => [row.vacancyId, row.id]));
   }
 
+  // Conversa mais recente do abrigo com o voluntário do perfil público; só
+  // existe depois de uma candidatura a vaga do abrigo.
+  async threadIdWithVolunteer(
+    shelterProfileId: string,
+    volunteerSlug: string,
+  ): Promise<string | null> {
+    const thread = await this.prisma.chatThread.findFirst({
+      where: {
+        shelterProfileId,
+        status: 'active',
+        volunteer: { slug: volunteerSlug },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+    return thread?.id ?? null;
+  }
+
   async threadIdsByVolunteer(vacancyId: string): Promise<Map<string, string>> {
     const rows = await this.prisma.chatThread.findMany({
       where: { vacancyId },

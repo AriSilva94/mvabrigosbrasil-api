@@ -746,5 +746,42 @@ describe('Chat REST (e2e)', () => {
         .set('Cookie', authCookie(people.shelterOwner.token))
         .expect(200, { threads: {} });
     });
+
+    it('finds the most recent active thread with a volunteer by slug, only for the shelter side', async () => {
+      const people = await seed(`bysl-${randomUUID().slice(0, 6)}`);
+      const slug = `vol-${randomUUID().slice(0, 8)}`;
+      await prisma.volunteer.update({
+        where: { id: people.volunteerId },
+        data: { slug },
+      });
+      const older = await createThread(prisma, people);
+      const otherVacancy = await prisma.vacancy.create({
+        data: {
+          title: 'Mais recente',
+          slug: `recente-${randomUUID()}`,
+          shelterId: people.shelterId,
+          status: 'active',
+          isPublished: true,
+        },
+      });
+      const newer = await createThread(prisma, people, {
+        vacancyId: otherVacancy.id,
+      });
+      await prisma.chatThread.update({
+        where: { id: older },
+        data: { updatedAt: new Date(Date.now() - 60_000) },
+      });
+      const lookup = (token: string, value = slug) =>
+        request(app.getHttpServer())
+          .get(`/api/v1/chat/threads/with-volunteer/${value}`)
+          .set('Cookie', authCookie(token));
+
+      await lookup(people.shelterOwner.token).expect(200, { thread_id: newer });
+      await lookup(people.shelterOwner.token, 'nao-existe').expect(200, {
+        thread_id: null,
+      });
+      await lookup(people.volunteerUser.token).expect(200, { thread_id: null });
+      await lookup(people.outsider.token).expect(200, { thread_id: null });
+    });
   });
 });

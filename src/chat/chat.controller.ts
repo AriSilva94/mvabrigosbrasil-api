@@ -35,6 +35,16 @@ export class ChatController {
     return { threads: await this.threads.threadIdsByVacancy(claims.sub) };
   }
 
+  @Get('threads/with-volunteer/:slug')
+  async threadWithVolunteer(
+    @CurrentUser() claims: Claims,
+    @Param('slug') slug: string,
+  ) {
+    return {
+      thread_id: await this.threads.threadIdWithVolunteer(claims.sub, slug),
+    };
+  }
+
   @Get('unread-count')
   async unreadCount(@CurrentUser() claims: Claims) {
     return { count: await this.threads.totalUnread(claims.sub) };
