@@ -766,6 +766,20 @@ describe('AuthService.forgotPassword', () => {
     expect(key).toBe(`pwdreset:${sha256(tokenInLink)}`);
   });
 
+  it('builds the reset link without a double slash when APP_URL ends with "/"', async () => {
+    config.get.mockReturnValue('https://dev.example.com/');
+    usersService.findByEmail.mockResolvedValue(
+      makeUser({ id: 'user-1', email: 'joao@example.com' }),
+    );
+
+    await service.forgotPassword('joao@example.com');
+
+    const [, link] = mailService.sendPasswordReset.mock.calls[0];
+    expect(link).toMatch(
+      /^https:\/\/dev\.example\.com\/redefinir-senha\?token=[A-Za-z0-9_-]+$/,
+    );
+  });
+
   it('nonexistent user: still returns {ok:true}, does not store a token or send e-mail', async () => {
     usersService.findByEmail.mockResolvedValue(null);
 

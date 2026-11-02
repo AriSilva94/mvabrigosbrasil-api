@@ -5,8 +5,13 @@ import type { MailTransport } from './mail.service';
 describe('MailService.sendPasswordReset', () => {
   it('sends via the injected SMTP transport with from = MAIL_FROM and the link in the html body', async () => {
     const send = jest.fn(
-      (payload: { from: string; to: string; subject: string; html: string }) =>
-        Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
+      (payload: {
+        from: string;
+        to: string;
+        subject: string;
+        html: string;
+        text: string;
+      }) => Promise.resolve({ data: { id: 'email-1' }, echo: payload }),
     );
     const fakeTransport: MailTransport = { sendMail: send };
     const config = {
@@ -25,7 +30,9 @@ describe('MailService.sendPasswordReset', () => {
     const payload = send.mock.calls[0][0];
     expect(payload.to).toBe('joao@example.com');
     expect(payload.from).toBe('MV Abrigos <no-reply@mvabrigosbrasil.com.br>');
-    expect(payload.html).toContain(link);
+    expect(payload.html).toContain(`href="${link}"`);
+    expect(payload.html).toContain('Redefinir minha senha');
+    expect(payload.text).toContain(link);
   });
 
   it('does not throw and does not call send when there is no transport (dev without SMTP_HOST)', async () => {

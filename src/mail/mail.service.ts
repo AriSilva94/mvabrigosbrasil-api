@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
+import { passwordResetEmail } from './password-reset.template';
 
 export const MAIL_TRANSPORT = 'MAIL_TRANSPORT';
 
@@ -12,8 +13,12 @@ export interface MailTransport {
     to: string;
     subject: string;
     html: string;
+    text: string;
   }): Promise<unknown>;
 }
+
+// Mesmo prazo do TTL do token em AuthService (`PWD_RESET_TTL_SECONDS`).
+const PASSWORD_RESET_VALIDITY_MINUTES = 60;
 
 const DEFAULT_FROM = 'MV Abrigos <contato@mvabrigosbrasil.com.br>';
 
@@ -32,13 +37,10 @@ export class MailService {
   }
 
   async sendPasswordReset(email: string, link: string): Promise<void> {
-    const subject = 'Redefinição de senha - MV Abrigos Brasil';
-    const html = `
-      <p>Você solicitou a redefinição da sua senha.</p>
-      <p>Clique no link abaixo para escolher uma nova senha. Este link expira em 60 minutos e só pode ser usado uma vez.</p>
-      <p><a href="${link}">${link}</a></p>
-      <p>Se você não solicitou essa alteração, ignore este e-mail.</p>
-    `.trim();
+    const { subject, html, text } = passwordResetEmail(
+      link,
+      PASSWORD_RESET_VALIDITY_MINUTES,
+    );
 
     if (!this.transport) {
       if (process.env.NODE_ENV !== 'production') {
@@ -64,6 +66,7 @@ export class MailService {
         to: email,
         subject,
         html,
+        text,
       });
     } catch (err) {
       // forgot-password nunca deve falhar por causa de um problema no envio

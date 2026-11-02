@@ -410,11 +410,13 @@ export class AuthService {
       PWD_RESET_TTL_SECONDS,
     );
 
-    const appUrl = this.config.get('APP_URL', { infer: true });
-    await this.mailService.sendPasswordReset(
-      email,
-      `${appUrl}/redefinir-senha?token=${token}`,
+    // `new URL` absorve a barra final que o APP_URL pode ter no ambiente.
+    const resetLink = new URL(
+      '/redefinir-senha',
+      this.config.get('APP_URL', { infer: true }),
     );
+    resetLink.searchParams.set('token', token);
+    await this.mailService.sendPasswordReset(email, resetLink.toString());
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
