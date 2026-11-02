@@ -34,8 +34,7 @@ export class ChatAccessService {
     if (thread.participants.length === 0) {
       throw new ForbiddenException({ error: 'Acesso negado' });
     }
-    const { participants: _participants, ...rest } = thread;
-    return rest;
+    return thread;
   }
 
   async isBlocked(a: string, b: string): Promise<boolean> {
