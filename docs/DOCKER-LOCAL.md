@@ -66,6 +66,8 @@ Se recriar o container `web` sem recriar o gateway, recarregar o Nginx para reso
 docker compose --env-file .env.docker.local -f compose.local.yml exec gateway nginx -s reload
 ```
 
+O chat usa WebSocket (Socket.IO) em `/api/v1/socket.io`, na mesma origem do site. O gateway encaminha o upgrade (`Upgrade`/`Connection`) e repete os cabeçalhos `X-Forwarded-*` dentro do `location /api/v1/`, porque um `proxy_set_header` no `location` deixa de herdar os do `server` e a API passaria a tratar o navegador como chamada interna, sem rate limit. Em `npm run dev` o mesmo caminho passa pelos rewrites do Next. Nos dois casos o `AUTH_JWT_SECRET` do front precisa ser igual ao da API em uso; com valores diferentes o login entra em loop de redirect (`.env.local` do front casa com o `.env` da API, não com o `.env.docker.local`).
+
 Para iniciar novamente sem rebuild ou nova carga:
 
 ```powershell
