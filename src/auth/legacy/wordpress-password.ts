@@ -45,10 +45,18 @@ export async function verifyWordpressPassword(
       const compatHash = normalizedHash.startsWith('$2y$')
         ? normalizedHash.replace('$2y$', '$2a$')
         : normalizedHash;
-      return await bcrypt.compare(
-        prepareWordpressPassword(trimmedPassword),
-        compatHash,
-      );
+      const prepared = crypto
+        .createHmac('sha384', 'wp-sha384')
+        .update(trimmedPassword)
+        .digest('base64');
+      if (await bcrypt.compare(prepared, compatHash)) return true;
+
+      // A migração anterior transformava a senha antes do HMAC. Esses
+      // hashes precisam continuar válidos junto ao formato oficial do WP.
+      const legacyPrepared = prepareWordpressPassword(trimmedPassword);
+      return legacyPrepared !== prepared
+        ? await bcrypt.compare(legacyPrepared, compatHash)
+        : false;
     }
 
     if (trimmedHash.startsWith('$P') || trimmedHash.startsWith('$H')) {
