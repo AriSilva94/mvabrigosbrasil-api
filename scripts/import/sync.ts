@@ -126,6 +126,60 @@ async function stageSnapshot(mirror: Client, target: Client): Promise<void> {
   }
 }
 
+// Conta que já entrou com a própria senha no Supabase (last_sign_in_at) não
+// pode manter o legado pendente: a senha antiga do WordPress continuaria
+// aceita e sobrescreveria a atual no login. Sem login registrado a conta
+// ainda tem a senha descartável do script e o legado é o único acesso. Os
+// efeitos são os mesmos da migração no login, aplicados ao snapshot.
+async function retireLegacyWithKnownPassword(
+  mirror: Client,
+  target: Client,
+): Promise<void> {
+  const { rows } = await mirror.query<{ email: string; at: string }>({
+    text: `SELECT lower(email) AS email, last_sign_in_at AS at FROM auth.users
+      WHERE deleted_at IS NULL AND last_sign_in_at IS NOT NULL`,
+    types: SNAPSHOT_TYPES,
+  });
+  await target.query(
+    'CREATE TEMP TABLE sync_retired_legacy (legacy_id bigint, user_id uuid, signed_in_at timestamptz) ON COMMIT DROP',
+  );
+  await target.query(
+    `INSERT INTO sync_retired_legacy
+      SELECT l.id, u.id, s.at
+      FROM unnest($1::text[], $2::timestamptz[]) AS s(email, at)
+      JOIN sync_users u ON u.email = s.email
+      JOIN sync_wp_users_legacy l ON lower(l.user_email) = s.email
+      WHERE NOT l.migrated`,
+    [rows.map((r) => r.email), rows.map((r) => r.at)],
+  );
+  const firstPost = (postType: string) =>
+    `(SELECT min(p.id) FROM sync_wp_posts_raw p WHERE p.post_type = '${postType}' AND p.post_author = r.legacy_id)`;
+  await target.query(`
+    UPDATE sync_volunteers v SET owner_profile_id = r.user_id
+    FROM sync_retired_legacy r
+    WHERE v.owner_profile_id IS NULL AND v.wp_post_id = ${firstPost('voluntario')}`);
+  await target.query(`
+    UPDATE sync_shelters s SET profile_id = r.user_id
+    FROM sync_retired_legacy r
+    WHERE s.profile_id IS NULL AND s.wp_post_id = ${firstPost('abrigo')}
+      AND NOT EXISTS (SELECT 1 FROM sync_shelters o WHERE o.profile_id = r.user_id)`);
+  await target.query(`
+    UPDATE sync_users u SET
+      wp_user_id = COALESCE(u.wp_user_id, CASE WHEN NOT EXISTS (
+        SELECT 1 FROM sync_users o WHERE o.wp_user_id = r.legacy_id
+      ) THEN r.legacy_id::int END),
+      role = COALESCE(u.role, (
+        SELECT p.post_type::"UserRole" FROM sync_wp_posts_raw p
+        WHERE p.post_author = r.legacy_id AND p.post_status = 'publish'
+          AND p.post_type IN ('abrigo', 'voluntario')
+        ORDER BY p.id LIMIT 1
+      ))
+    FROM sync_retired_legacy r WHERE u.id = r.user_id`);
+  await target.query(`
+    UPDATE sync_wp_users_legacy l SET migrated = true, migrated_at = r.signed_in_at
+    FROM sync_retired_legacy r WHERE l.id = r.legacy_id`);
+}
+
 async function compareSnapshot(
   target: Client,
 ): Promise<Record<string, SyncCounts>> {
@@ -213,6 +267,7 @@ export async function syncSnapshot(
       }
     }
     await stageSnapshot(mirror, target);
+    await retireLegacyWithKnownPassword(mirror, target);
     const report = await compareSnapshot(target);
     if (options.apply && hasChanges(report)) {
       // A carga completa evita colisões transitórias de chaves únicas e

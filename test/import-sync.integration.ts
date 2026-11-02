@@ -39,12 +39,15 @@ describe('final snapshot synchronization (isolated PostgreSQL)', () => {
     }
     await mirror.query(`
       CREATE SCHEMA IF NOT EXISTS auth;
+      CREATE TABLE IF NOT EXISTS auth.sign_ins (user_id uuid PRIMARY KEY, last_sign_in_at timestamptz NOT NULL);
+      DROP VIEW IF EXISTS auth.users;
       CREATE OR REPLACE VIEW auth.users AS SELECT
         id, email, password_hash AS encrypted_password,
         CASE WHEN email_verified THEN created_at END AS email_confirmed_at,
         jsonb_build_object('registerType',role,'teamOnly',is_team_only,
           'teamDisabled',team_disabled,'creator_profile_id',creator_profile_id) AS raw_user_meta_data,
-        created_at, updated_at, NULL::timestamptz AS deleted_at FROM public.users;
+        created_at, updated_at, NULL::timestamptz AS deleted_at, s.last_sign_in_at
+        FROM public.users LEFT JOIN auth.sign_ins s ON s.user_id = users.id;
       CREATE OR REPLACE VIEW public.profiles AS SELECT
         id,full_name,phone,wp_user_id,origin,is_team_only FROM public.users;
     `);
@@ -58,6 +61,7 @@ describe('final snapshot synchronization (isolated PostgreSQL)', () => {
   beforeEach(async () => {
     for (const client of [mirror, target])
       await client.query(`TRUNCATE ${tables.join(', ')}`);
+    await mirror.query('TRUNCATE auth.sign_ins');
     await mirror.query(
       `INSERT INTO users (id,email,password_hash,role) VALUES ($1,'owner@test.local',$2,'abrigo')`,
       [userId, hash],
@@ -205,6 +209,74 @@ describe('final snapshot synchronization (isolated PostgreSQL)', () => {
         )
       ).rows[0].tgenabled,
     ).toBe('O');
+  });
+
+  it('retires the WordPress fallback of accounts that already signed in with their own password', async () => {
+    const knownId = '10000000-0000-4000-8000-000000000010';
+    const scriptId = '10000000-0000-4000-8000-000000000011';
+    const signedInAt = '2026-08-01 10:00:00.123456+00';
+    await mirror.query(
+      `INSERT INTO users (id,email,password_hash) VALUES ($1,'known@test.local',$3),($2,'script@test.local',$3)`,
+      [knownId, scriptId, hash],
+    );
+    await mirror.query(
+      'INSERT INTO auth.sign_ins (user_id,last_sign_in_at) VALUES ($1,$2)',
+      [knownId, signedInAt],
+    );
+    await mirror.query(
+      `INSERT INTO wp_users_legacy (id,user_login,user_email,user_pass,migrated) VALUES
+        (50,'known','Known@test.local','old-wp-hash',false),
+        (51,'script','script@test.local','old-wp-hash',false)`,
+    );
+    await mirror.query(
+      `INSERT INTO wp_posts_raw (id,post_author,post_type,post_status) VALUES
+        (500,50,'abrigo','publish'),(501,50,'voluntario','publish'),(510,51,'abrigo','publish')`,
+    );
+    await mirror.query('SET session_replication_role=replica');
+    try {
+      await mirror.query(
+        `INSERT INTO shelters (id,name,wp_post_id) VALUES
+          ('20000000-0000-4000-8000-000000000010','Known shelter',500),
+          ('20000000-0000-4000-8000-000000000011','Script shelter',510)`,
+      );
+    } finally {
+      await mirror.query('SET session_replication_role=origin');
+    }
+    await mirror.query(
+      `INSERT INTO volunteers (id,name,wp_post_id) VALUES ('30000000-0000-4000-8000-000000000010','Known volunteer',501)`,
+    );
+
+    await syncSnapshot(mirror, target, { apply: true });
+
+    const legacy = await target.query<{
+      id: string;
+      migrated: boolean;
+      at: string | null;
+    }>(
+      'SELECT id::text, migrated, migrated_at::text AS at FROM wp_users_legacy WHERE id IN (50,51) ORDER BY id',
+    );
+    expect(legacy.rows).toEqual([
+      { id: '50', migrated: true, at: signedInAt },
+      { id: '51', migrated: false, at: null },
+    ]);
+    const known = await target.query<{ wp_user_id: number; role: string }>(
+      'SELECT wp_user_id, role FROM users WHERE id=$1',
+      [knownId],
+    );
+    expect(known.rows[0]).toEqual({ wp_user_id: 50, role: 'abrigo' });
+    const links = await target.query<{ wp_post_id: number; owner: string }>(`
+      SELECT wp_post_id, profile_id::text AS owner FROM shelters WHERE wp_post_id IN (500,510)
+      UNION ALL SELECT wp_post_id, owner_profile_id::text FROM volunteers WHERE wp_post_id=501
+      ORDER BY wp_post_id`);
+    expect(links.rows).toEqual([
+      { wp_post_id: 500, owner: knownId },
+      { wp_post_id: 501, owner: knownId },
+      { wp_post_id: 510, owner: null },
+    ]);
+
+    const rerun = await syncSnapshot(mirror, target, { apply: true });
+    for (const row of Object.values(rerun))
+      expect(row).toMatchObject({ inserted: 0, updated: 0, deleted: 0 });
   });
 
   it('rejects identical source and destination databases', async () => {

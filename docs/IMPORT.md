@@ -368,6 +368,10 @@ A segunda prévia deve mostrar zero inclusões, alterações e exclusões. Uma f
 7. Invalidar as sessões de refresh, os tokens de reset e o cache de dados públicos no Redis exclusivo deste ambiente antes de reabrir a API. Uma carga do banco não invalida automaticamente sessões/cache já presentes no Redis. Também reiniciar/revalidar o cache do NextJS. Isso evita servir dados antigos ou conservar sessões de contas removidas. Não apagar bancos Redis de outros projetos.
 8. Fazer smoke com contas Supabase e WordPress conhecidas, reset/troca de senha, vínculos e permissões. Depois alterar o roteamento e reabrir o site, mantendo o Supabase sem novas gravações.
 
+### Encerramento do fallback WordPress (02/11/2026)
+
+Antes da comparação, o snapshot em staging marca como migrado o legado `wp_users_legacy` (`migrated=false`) de toda conta que já entrou com a própria senha no Supabase (`auth.users.last_sign_in_at` preenchido). Sem isso, a senha antiga do WordPress continuaria aceita no login e sobrescreveria a senha atual. Os efeitos são os mesmos da migração no primeiro login: `migrated_at` recebe a data do último login, a conta recebe `wp_user_id`/`role` quando ausentes, e abrigo/voluntário pendentes são vinculados. Contas sem login registrado mantêm o legado pendente, porque ainda têm a senha descartável dos scripts de criação e o WordPress é o único acesso delas. No mirror de 03/09/2026 a prévia mostrou 33 legados encerrados, 5 contas com `wp_user_id` preenchido e 3 voluntários vinculados. Essas alterações aparecem como `updated` na prévia e são reaplicadas de forma idempotente em execuções seguintes.
+
 ### Garantias e limites
 
 - A origem fica em transação `REPEATABLE READ READ ONLY`. A prévia cria apenas staging temporário no destino e termina com rollback.
