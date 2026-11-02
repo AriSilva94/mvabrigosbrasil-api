@@ -558,4 +558,193 @@ describe('Chat REST (e2e)', () => {
       });
     });
   });
+
+  describe('vacancy application', () => {
+    const apply = (people: ChatPeople) =>
+      request(app.getHttpServer())
+        .post(`/api/v1/vacancies/${people.vacancyId}/apply`)
+        .set('Cookie', authCookie(people.volunteerUser.token));
+
+    it('apply creates application, thread, 2 participants and the system message atomically', async () => {
+      const label = `apply-${randomUUID().slice(0, 6)}`;
+      const people = await seed(label);
+      const res = await apply(people).expect(200);
+      const body = res.body as {
+        success: boolean;
+        thread_id: string;
+        application: { id: string };
+      };
+      expect(body.success).toBe(true);
+
+      const thread = await prisma.chatThread.findUniqueOrThrow({
+        where: { id: body.thread_id },
+        include: { participants: true, messages: true },
+      });
+      expect(thread).toMatchObject({
+        vacancyId: people.vacancyId,
+        volunteerProfileId: people.volunteerUser.id,
+        shelterProfileId: people.shelterOwner.id,
+        shelterId: people.shelterId,
+        volunteerId: people.volunteerId,
+        applicationId: body.application.id,
+        status: 'active',
+      });
+      expect(
+        thread.participants.map((p) => `${p.role}:${p.profileId}`).sort(),
+      ).toEqual(
+        [
+          `shelter:${people.shelterOwner.id}`,
+          `volunteer:${people.volunteerUser.id}`,
+        ].sort(),
+      );
+      expect(thread.messages).toHaveLength(1);
+      expect(thread.messages[0]).toMatchObject({
+        senderId: people.volunteerUser.id,
+        messageType: 'system',
+        content: `Candidatura enviada para a vaga "Vaga ${label}". Vocês já podem trocar mensagens!`,
+      });
+    });
+
+    it('apply twice returns 409 and keeps a single thread', async () => {
+      const people = await seed(`apply2-${randomUUID().slice(0, 6)}`);
+      await apply(people).expect(200);
+      await apply(people).expect(409, {
+        error: 'Você já se candidatou a esta vaga',
+      });
+      expect(
+        await prisma.chatThread.count({
+          where: { vacancyId: people.vacancyId },
+        }),
+      ).toBe(1);
+    });
+
+    it('apply to a vacancy whose shelter has no profile_id returns 404 "Abrigo não encontrado" and stores nothing', async () => {
+      const people = await seed(`apply3-${randomUUID().slice(0, 6)}`);
+      await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
+        await tx.$executeRaw`UPDATE shelters SET profile_id = NULL WHERE id = ${people.shelterId}::uuid`;
+      });
+      await apply(people).expect(404, { error: 'Abrigo não encontrado' });
+      expect(
+        await prisma.vacancyApplication.count({
+          where: { vacancyId: people.vacancyId },
+        }),
+      ).toBe(0);
+    });
+
+    it('reuses an existing thread for the pair and completes missing participants', async () => {
+      const people = await seed(`apply4-${randomUUID().slice(0, 6)}`);
+      const orphan = await prisma.chatThread.create({
+        data: {
+          vacancyId: people.vacancyId,
+          volunteerProfileId: people.volunteerUser.id,
+          shelterProfileId: people.shelterOwner.id,
+          shelterId: people.shelterId,
+          volunteerId: people.volunteerId,
+          participants: {
+            create: [{ profileId: people.volunteerUser.id, role: 'volunteer' }],
+          },
+        },
+      });
+      const res = await apply(people).expect(200);
+      expect((res.body as { thread_id: string }).thread_id).toBe(orphan.id);
+      expect(
+        await prisma.chatParticipant.count({ where: { threadId: orphan.id } }),
+      ).toBe(2);
+    });
+
+    it('rolls back the application when the conversation cannot be created', async () => {
+      const people = await seed(`apply9-${randomUUID().slice(0, 6)}`);
+      // Título enorme faz a mensagem de sistema violar o CHECK de 5000
+      // caracteres dentro da transação.
+      await prisma.vacancy.update({
+        where: { id: people.vacancyId },
+        data: { title: 'x'.repeat(5000) },
+      });
+      await apply(people).expect(500);
+      expect(
+        await prisma.vacancyApplication.count({
+          where: { vacancyId: people.vacancyId },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.chatThread.count({
+          where: { vacancyId: people.vacancyId },
+        }),
+      ).toBe(0);
+    });
+
+    it('shelter owner receives the conversation in the inbox with the system message unread', async () => {
+      const label = `apply5-${randomUUID().slice(0, 6)}`;
+      const people = await seed(label);
+      await apply(people).expect(200);
+      const inbox = await request(app.getHttpServer())
+        .get('/api/v1/chat/threads')
+        .set('Cookie', authCookie(people.shelterOwner.token))
+        .expect(200);
+      expect(
+        (inbox.body as { threads: InboxThread[] }).threads[0],
+      ).toMatchObject({
+        other_participant_name: `Voluntário ${label}`,
+        last_message: { message_type: 'system' },
+        unread_count: 1,
+      });
+    });
+
+    it('my-status exposes threadId and shelterProfileId for an applicant', async () => {
+      const people = await seed(`apply6-${randomUUID().slice(0, 6)}`);
+      const applied = await apply(people).expect(200);
+      await request(app.getHttpServer())
+        .get(`/api/v1/vacancies/${people.vacancyId}/my-status`)
+        .set('Cookie', authCookie(people.volunteerUser.token))
+        .expect(200, {
+          isOwner: false,
+          hasApplied: true,
+          threadId: (applied.body as { thread_id: string }).thread_id,
+          shelterProfileId: people.shelterOwner.id,
+        });
+      await request(app.getHttpServer())
+        .get(`/api/v1/vacancies/${people.vacancyId}/my-status`)
+        .set('Cookie', authCookie(people.outsider.token))
+        .expect(200, {
+          isOwner: false,
+          hasApplied: false,
+          threadId: null,
+          shelterProfileId: null,
+        });
+    });
+
+    it('applications list exposes thread_id per applicant', async () => {
+      const people = await seed(`apply7-${randomUUID().slice(0, 6)}`);
+      const applied = await apply(people).expect(200);
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/vacancies/${people.vacancyId}/applications`)
+        .set('Cookie', authCookie(people.shelterOwner.token))
+        .expect(200);
+      const threadId = (applied.body as { thread_id: string }).thread_id;
+      expect(threadId).toEqual(expect.any(String));
+      expect(
+        (res.body as { applications: { thread_id: string | null }[] })
+          .applications[0].thread_id,
+      ).toBe(threadId);
+    });
+
+    it('lists the volunteer threads by vacancy for the vacancies page', async () => {
+      const people = await seed(`apply8-${randomUUID().slice(0, 6)}`);
+      const applied = await apply(people).expect(200);
+      await request(app.getHttpServer())
+        .get('/api/v1/chat/threads/by-vacancy')
+        .set('Cookie', authCookie(people.volunteerUser.token))
+        .expect(200, {
+          threads: {
+            [people.vacancyId]: (applied.body as { thread_id: string })
+              .thread_id,
+          },
+        });
+      await request(app.getHttpServer())
+        .get('/api/v1/chat/threads/by-vacancy')
+        .set('Cookie', authCookie(people.shelterOwner.token))
+        .expect(200, { threads: {} });
+    });
+  });
 });

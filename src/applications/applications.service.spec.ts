@@ -2,6 +2,8 @@ import { ConflictException, Logger } from '@nestjs/common';
 import type { Claims } from '../auth/jwt/token.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import { VacancyResolver } from '../vacancies/vacancy-resolver';
+import type { ChatEventsService } from '../chat/chat-events.service';
+import type { ChatThreadsService } from '../chat/chat-threads.service';
 import { ApplicationsService } from './applications.service';
 
 const loggerErrorSpy = jest
@@ -49,6 +51,7 @@ const application = {
 };
 
 type PrismaMock = {
+  $transaction: jest.Mock;
   shelter: { findUnique: jest.Mock };
   volunteer: { findFirst: jest.Mock };
   vacancyApplication: { create: jest.Mock; findMany: jest.Mock };
@@ -57,11 +60,21 @@ type PrismaMock = {
 describe('ApplicationsService', () => {
   let prisma: PrismaMock;
   let resolver: { resolveAny: jest.Mock; resolveForShelter: jest.Mock };
+  let chatThreads: {
+    createForApplication: jest.Mock;
+    threadIdsByVolunteer: jest.Mock;
+  };
+  let chatEvents: { messageCreated: jest.Mock };
   let service: ApplicationsService;
 
   beforeEach(() => {
     prisma = {
-      shelter: { findUnique: jest.fn() },
+      $transaction: jest.fn((run: (tx: unknown) => unknown) => run(prisma)),
+      shelter: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ id: vacancy.shelterId, profileId: 'owner-1' }),
+      },
       volunteer: { findFirst: jest.fn() },
       vacancyApplication: { create: jest.fn(), findMany: jest.fn() },
     };
@@ -69,9 +82,18 @@ describe('ApplicationsService', () => {
       resolveAny: jest.fn(),
       resolveForShelter: jest.fn(),
     };
+    chatThreads = {
+      createForApplication: jest
+        .fn()
+        .mockResolvedValue({ threadId: 'thread-1', systemMessage: null }),
+      threadIdsByVolunteer: jest.fn().mockResolvedValue(new Map()),
+    };
+    chatEvents = { messageCreated: jest.fn() };
     service = new ApplicationsService(
       prisma as unknown as PrismaService,
       resolver as unknown as VacancyResolver,
+      chatThreads as unknown as ChatThreadsService,
+      chatEvents as unknown as ChatEventsService,
     );
   });
 
@@ -90,7 +112,17 @@ describe('ApplicationsService', () => {
         created_at: dates.createdAt.toISOString(),
         updated_at: dates.updatedAt.toISOString(),
       },
+      thread_id: 'thread-1',
       success: true,
+    });
+    expect(chatThreads.createForApplication).toHaveBeenCalledWith(prisma, {
+      vacancyId: vacancy.id,
+      vacancyTitle: vacancy.title,
+      shelterId: vacancy.shelterId,
+      shelterProfileId: 'owner-1',
+      volunteerId: volunteer.id,
+      volunteerProfileId: claims.sub,
+      applicationId: application.id,
     });
     expect(prisma.vacancyApplication.create).toHaveBeenCalledWith({
       data: {
@@ -185,6 +217,7 @@ describe('ApplicationsService', () => {
           applied_at: dates.appliedAt.toISOString(),
           created_at: dates.createdAt.toISOString(),
           volunteers: volunteer,
+          thread_id: null,
         },
       ],
     });

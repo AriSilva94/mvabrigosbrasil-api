@@ -30,6 +30,11 @@ export class ChatController {
     return { threads: await this.threads.listInbox(claims.sub) };
   }
 
+  @Get('threads/by-vacancy')
+  async threadsByVacancy(@CurrentUser() claims: Claims) {
+    return { threads: await this.threads.threadIdsByVacancy(claims.sub) };
+  }
+
   @Get('unread-count')
   async unreadCount(@CurrentUser() claims: Claims) {
     return { count: await this.threads.totalUnread(claims.sub) };

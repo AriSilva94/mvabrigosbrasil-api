@@ -411,10 +411,23 @@ describe('Data domains E2E - vacancies and applications (slice B)', () => {
     await request(app.getHttpServer())
       .get(`/api/v1/vacancies/${fixtureVacancyId}/my-status`)
       .set('Authorization', volunteerAuth)
-      .expect(200, { isOwner: false, hasApplied: true });
+      .expect(200)
+      .expect(({ body }) =>
+        expect(body).toEqual({
+          isOwner: false,
+          hasApplied: true,
+          threadId: expect.any(String),
+          shelterProfileId: ownerId,
+        }),
+      );
     await request(app.getHttpServer())
       .get(`/api/v1/vacancies/${fixtureVacancyId}/my-status`)
-      .expect(200, { isOwner: false, hasApplied: false });
+      .expect(200, {
+        isOwner: false,
+        hasApplied: false,
+        threadId: null,
+        shelterProfileId: null,
+      });
 
     await request(app.getHttpServer())
       .post(`/api/v1/vacancies/${fixtureVacancyId}/apply`)

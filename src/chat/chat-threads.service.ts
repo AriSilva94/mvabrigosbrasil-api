@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { toMessageDto, type MessageDto } from './chat-message.dto';
 
 const INBOX_LIMIT = 50;
 
@@ -57,6 +59,19 @@ export function toInboxThread(
   };
 }
 
+export type ApplicationThreadInput = {
+  vacancyId: string;
+  vacancyTitle: string;
+  shelterId: string;
+  shelterProfileId: string;
+  volunteerId: string;
+  volunteerProfileId: string;
+  applicationId: string;
+};
+
+export const applicationSystemMessage = (vacancyTitle: string): string =>
+  `Candidatura enviada para a vaga "${vacancyTitle}". Vocês já podem trocar mensagens!`;
+
 @Injectable()
 export class ChatThreadsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -96,6 +111,95 @@ export class ChatThreadsService {
         unread.get(row.id) ?? 0,
       ),
     );
+  }
+
+  // Roda dentro da transação da candidatura: qualquer falha aqui desfaz a
+  // candidatura junto. Idempotente pelo UNIQUE (vaga, voluntário).
+  async createForApplication(
+    tx: Prisma.TransactionClient,
+    input: ApplicationThreadInput,
+  ): Promise<{ threadId: string; systemMessage: MessageDto | null }> {
+    const existing = await tx.chatThread.findUnique({
+      where: {
+        vacancyId_volunteerProfileId: {
+          vacancyId: input.vacancyId,
+          volunteerProfileId: input.volunteerProfileId,
+        },
+      },
+      select: { id: true },
+    });
+    const thread =
+      existing ??
+      (await tx.chatThread.create({
+        data: {
+          vacancyId: input.vacancyId,
+          volunteerProfileId: input.volunteerProfileId,
+          shelterProfileId: input.shelterProfileId,
+          shelterId: input.shelterId,
+          volunteerId: input.volunteerId,
+          applicationId: input.applicationId,
+        },
+        select: { id: true },
+      }));
+
+    await tx.chatParticipant.createMany({
+      data: [
+        {
+          threadId: thread.id,
+          profileId: input.volunteerProfileId,
+          role: 'volunteer',
+        },
+        {
+          threadId: thread.id,
+          profileId: input.shelterProfileId,
+          role: 'shelter',
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (existing) return { threadId: thread.id, systemMessage: null };
+
+    const message = await tx.chatMessage.create({
+      data: {
+        threadId: thread.id,
+        senderId: input.volunteerProfileId,
+        content: applicationSystemMessage(input.vacancyTitle),
+        messageType: 'system',
+      },
+    });
+    await tx.chatThread.update({
+      where: { id: thread.id },
+      data: { updatedAt: message.createdAt },
+    });
+    return { threadId: thread.id, systemMessage: toMessageDto(message) };
+  }
+
+  async threadIdsByVacancy(userId: string): Promise<Record<string, string>> {
+    const rows = await this.prisma.chatThread.findMany({
+      where: { volunteerProfileId: userId, status: 'active' },
+      select: { id: true, vacancyId: true },
+    });
+    return Object.fromEntries(rows.map((row) => [row.vacancyId, row.id]));
+  }
+
+  async threadIdsByVolunteer(vacancyId: string): Promise<Map<string, string>> {
+    const rows = await this.prisma.chatThread.findMany({
+      where: { vacancyId },
+      select: { id: true, volunteerId: true },
+    });
+    return new Map(rows.map((row) => [row.volunteerId, row.id]));
+  }
+
+  async findForApplicant(
+    vacancyId: string,
+    volunteerProfileId: string,
+  ): Promise<{ id: string; shelterProfileId: string } | null> {
+    return this.prisma.chatThread.findUnique({
+      where: {
+        vacancyId_volunteerProfileId: { vacancyId, volunteerProfileId },
+      },
+      select: { id: true, shelterProfileId: true },
+    });
   }
 
   async totalUnread(userId: string): Promise<number> {

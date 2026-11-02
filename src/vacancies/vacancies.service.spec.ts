@@ -7,6 +7,7 @@ import type { Claims } from '../auth/jwt/token.service';
 import type { PrismaService } from '../prisma/prisma.service';
 import type { VacancyFormInput } from './schemas/vacancy.schema';
 import { VacancyResolver } from './vacancy-resolver';
+import type { ChatThreadsService } from '../chat/chat-threads.service';
 import { VacanciesService } from './vacancies.service';
 
 const loggerErrorSpy = jest
@@ -96,6 +97,7 @@ function createPrismaMock(): PrismaMock {
 describe('VacanciesService', () => {
   let prisma: PrismaMock;
   let resolver: { resolveForShelter: jest.Mock; resolvePublic: jest.Mock };
+  let chatThreads: { findForApplicant: jest.Mock };
   let service: VacanciesService;
 
   beforeEach(() => {
@@ -104,9 +106,15 @@ describe('VacanciesService', () => {
       resolveForShelter: jest.fn(),
       resolvePublic: jest.fn(),
     };
+    chatThreads = {
+      findForApplicant: jest
+        .fn()
+        .mockResolvedValue({ id: 'thread-1', shelterProfileId: 'owner-1' }),
+    };
     service = new VacanciesService(
       prisma as unknown as PrismaService,
       resolver as unknown as VacancyResolver,
+      chatThreads as unknown as ChatThreadsService,
     );
   });
 
@@ -287,6 +295,8 @@ describe('VacanciesService', () => {
       {
         isOwner: false,
         hasApplied: false,
+        threadId: null,
+        shelterProfileId: null,
       },
     );
     expect(prisma.shelter.findUnique).not.toHaveBeenCalled();
@@ -302,6 +312,8 @@ describe('VacanciesService', () => {
     await expect(service.getMyStatus(claims, vacancy.slug)).resolves.toEqual({
       isOwner: true,
       hasApplied: false,
+      threadId: null,
+      shelterProfileId: null,
     });
     expect(resolver.resolvePublic).not.toHaveBeenCalled();
   });
@@ -316,7 +328,13 @@ describe('VacanciesService', () => {
     await expect(service.getMyStatus(claims, vacancy.slug)).resolves.toEqual({
       isOwner: false,
       hasApplied: true,
+      threadId: 'thread-1',
+      shelterProfileId: 'owner-1',
     });
+    expect(chatThreads.findForApplicant).toHaveBeenCalledWith(
+      vacancy.id,
+      claims.sub,
+    );
     expect(prisma.vacancyApplication.findFirst).toHaveBeenCalledWith({
       where: { vacancyId: vacancy.id, volunteerId: 'volunteer-1' },
       select: { id: true },
@@ -330,6 +348,8 @@ describe('VacanciesService', () => {
     await expect(service.getMyStatus(claims, vacancy.slug)).resolves.toEqual({
       isOwner: false,
       hasApplied: false,
+      threadId: null,
+      shelterProfileId: null,
     });
     expect(prisma.volunteer.findFirst).not.toHaveBeenCalled();
   });

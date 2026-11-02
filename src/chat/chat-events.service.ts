@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ChatGateway, userRoom } from './chat.gateway';
-import type { MessageDto } from './chat-messages.service';
+import type { MessageDto } from './chat-message.dto';
 
 // Eventos vão sempre para as salas dos participantes, nunca para uma sala
 // "da conversa" escolhida pelo client: quem não participa não tem como

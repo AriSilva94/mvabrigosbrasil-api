@@ -10,6 +10,8 @@ import type { Claims } from '../auth/jwt/token.service';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { VacancyResolver } from '../vacancies/vacancy-resolver';
+import { ChatEventsService } from '../chat/chat-events.service';
+import { ChatThreadsService } from '../chat/chat-threads.service';
 
 const volunteerSelect = {
   id: true,
@@ -64,13 +66,17 @@ function mapApplication(row: {
   };
 }
 
-function mapApplicationWithVolunteer(row: ApplicationWithVolunteer) {
+function mapApplicationWithVolunteer(
+  row: ApplicationWithVolunteer,
+  threadId: string | null,
+) {
   return {
     id: row.id,
     status: row.status,
     applied_at: row.appliedAt.toISOString(),
     created_at: row.createdAt.toISOString(),
     volunteers: row.volunteer,
+    thread_id: threadId,
   };
 }
 
@@ -81,6 +87,8 @@ export class ApplicationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly resolver: VacancyResolver,
+    private readonly chatThreads: ChatThreadsService,
+    private readonly chatEvents: ChatEventsService,
   ) {}
 
   async apply(claims: Claims, identifier: string) {
@@ -118,15 +126,50 @@ export class ApplicationsService {
       });
     }
 
+    const shelter = vacancy.shelterId
+      ? await this.prisma.shelter.findUnique({
+          where: { id: vacancy.shelterId },
+          select: { id: true, profileId: true },
+        })
+      : null;
+    if (!shelter?.profileId) {
+      throw new NotFoundException({ error: 'Abrigo não encontrado' });
+    }
+    const shelterProfileId = shelter.profileId;
+
     try {
-      const application = await this.prisma.vacancyApplication.create({
-        data: {
-          vacancyId: vacancy.id,
-          volunteerId: volunteer.id,
-          status: 'pending',
-        },
-      });
-      return { application: mapApplication(application), success: true };
+      const { application, threadId, systemMessage } =
+        await this.prisma.$transaction(async (tx) => {
+          const created = await tx.vacancyApplication.create({
+            data: {
+              vacancyId: vacancy.id,
+              volunteerId: volunteer.id,
+              status: 'pending',
+            },
+          });
+          const thread = await this.chatThreads.createForApplication(tx, {
+            vacancyId: vacancy.id,
+            vacancyTitle: vacancy.title,
+            shelterId: shelter.id,
+            shelterProfileId,
+            volunteerId: volunteer.id,
+            volunteerProfileId: claims.sub,
+            applicationId: created.id,
+          });
+          return { application: created, ...thread };
+        });
+
+      if (systemMessage) {
+        this.chatEvents.messageCreated(systemMessage, [
+          claims.sub,
+          shelterProfileId,
+        ]);
+      }
+      return {
+        application: mapApplication(application),
+        thread_id: threadId,
+        success: true,
+      };
     } catch (error) {
       if (hasErrorCode(error, 'P2002') || hasErrorCode(error, '23505')) {
         throw new ConflictException({
@@ -160,13 +203,21 @@ export class ApplicationsService {
     }
 
     try {
-      const applications = await this.prisma.vacancyApplication.findMany({
-        where: { vacancyId: vacancy.id },
-        orderBy: { appliedAt: 'desc' },
-        include: { volunteer: { select: volunteerSelect } },
-      });
+      const [applications, threads] = await Promise.all([
+        this.prisma.vacancyApplication.findMany({
+          where: { vacancyId: vacancy.id },
+          orderBy: { appliedAt: 'desc' },
+          include: { volunteer: { select: volunteerSelect } },
+        }),
+        this.chatThreads.threadIdsByVolunteer(vacancy.id),
+      ]);
       return {
-        applications: applications.map(mapApplicationWithVolunteer),
+        applications: applications.map((row) =>
+          mapApplicationWithVolunteer(
+            row,
+            threads.get(row.volunteerId) ?? null,
+          ),
+        ),
       };
     } catch (error) {
       this.logger.error('Erro ao buscar candidaturas', error);

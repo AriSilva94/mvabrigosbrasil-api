@@ -7,8 +7,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import type { ChatMessage, Prisma } from '../generated/prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import { ChatAccessService } from './chat-access.service';
+import { toMessageDto, type MessageDto } from './chat-message.dto';
 import { ChatEventsService } from './chat-events.service';
 import { ChatThreadsService } from './chat-threads.service';
 import { messageContentSchema } from './schemas/chat.schema';
@@ -20,39 +21,11 @@ const EDIT_WINDOW_MS = 15 * 60 * 1000;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export type MessageDto = {
-  id: string;
-  thread_id: string;
-  sender_id: string;
-  content: string;
-  message_type: string;
-  status: string;
-  edited_at: string | null;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
 export type MessagePage = {
   messages: MessageDto[];
   has_more: boolean;
   next_cursor: string | null;
 };
-
-export function toMessageDto(message: ChatMessage): MessageDto {
-  return {
-    id: message.id,
-    thread_id: message.threadId,
-    sender_id: message.senderId,
-    content: message.content,
-    message_type: message.messageType,
-    status: message.status,
-    edited_at: message.editedAt?.toISOString() ?? null,
-    deleted_at: message.deletedAt?.toISOString() ?? null,
-    created_at: message.createdAt.toISOString(),
-    updated_at: message.updatedAt.toISOString(),
-  };
-}
 
 function parseContent(input: unknown): string {
   const parsed = messageContentSchema.safeParse({ content: input });
