@@ -13,6 +13,7 @@ import type { Vacancy, Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { mapPublicVacancyCard, mapVacancyRow } from './mappers';
 import type { VacancyFormInput } from './schemas/vacancy.schema';
+import { ChatThreadsService } from '../chat/chat-threads.service';
 import { VacancyResolver } from './vacancy-resolver';
 
 const sourceVacancy = (row: Vacancy) => ({
@@ -27,6 +28,7 @@ export class VacanciesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly resolver: VacancyResolver,
+    private readonly chatThreads: ChatThreadsService,
   ) {}
 
   async list(claims: Claims) {
@@ -173,7 +175,12 @@ export class VacanciesService {
   }
 
   async getMyStatus(claims: Claims | undefined, identifier: string) {
-    const empty = { isOwner: false, hasApplied: false };
+    const empty = {
+      isOwner: false,
+      hasApplied: false,
+      threadId: null,
+      shelterProfileId: null,
+    };
     if (!claims) return empty;
 
     try {
@@ -186,7 +193,7 @@ export class VacanciesService {
           identifier,
           shelter.id,
         );
-        if (ownVacancy) return { isOwner: true, hasApplied: false };
+        if (ownVacancy) return { ...empty, isOwner: true };
       }
 
       const vacancy = await this.resolver.resolvePublic(identifier);
@@ -200,7 +207,17 @@ export class VacanciesService {
         where: { vacancyId: vacancy.id, volunteerId: volunteer.id },
         select: { id: true },
       });
-      return { isOwner: false, hasApplied: Boolean(application) };
+      if (!application) return empty;
+      const thread = await this.chatThreads.findForApplicant(
+        vacancy.id,
+        claims.sub,
+      );
+      return {
+        isOwner: false,
+        hasApplied: true,
+        threadId: thread?.id ?? null,
+        shelterProfileId: thread?.shelterProfileId ?? null,
+      };
     } catch (error) {
       this.logger.error('Erro ao consultar status da vaga', error);
       return empty;

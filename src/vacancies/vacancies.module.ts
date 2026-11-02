@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TeamActiveGuard } from '../common/guards/team-active.guard';
+import { ChatModule } from '../chat/chat.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { VacancyResolver } from './vacancy-resolver';
 import {
@@ -9,7 +10,7 @@ import {
 import { VacanciesService } from './vacancies.service';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, ChatModule],
   controllers: [VacanciesController, PublicVacanciesController],
   providers: [VacanciesService, VacancyResolver, TeamActiveGuard],
   exports: [VacancyResolver],
