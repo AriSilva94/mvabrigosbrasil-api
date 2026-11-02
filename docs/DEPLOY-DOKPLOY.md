@@ -27,7 +27,7 @@ No frontend, scripts/audit.mjs mantém a mesma exceção específica da referên
 
 ## Configuração no GitHub
 
-Em ambos os repositórios, criar os Environments develop e main, limitados às branches de mesmo nome.
+Em ambos os repositórios, criar os Environments development (branch develop) e production (branch main), limitados à respectiva branch.
 
 Em cada Environment:
 
