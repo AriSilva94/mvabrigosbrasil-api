@@ -867,8 +867,11 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
   });
 
+  // `reset` prova posse do e-mail e assume o legado pendente. `change` só
+  // prova a senha da conta: o legado segue pendente até o dono dele entrar
+  // com a senha do WordPress (o que também assume os vínculos).
   it.each(['reset', 'change'] as const)(
-    '%s closes legacy fallback and keeps pending shelter/volunteer links',
+    '%s keeps pending shelter/volunteer links reachable only by the e-mail owner',
     async (operation) => {
       const caseNo = operation === 'reset' ? 17 : 18;
       const legacyId = BigInt(900000 + caseNo);
@@ -935,15 +938,34 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
             newPassword: 'NewPassword123',
           })
           .expect(200);
+
+        expect(
+          (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
+            ?.migrated,
+        ).toBe(false);
+        expect(
+          (
+            await prisma.shelter.findUnique({
+              where: { wpPostId: shelterPostId },
+            })
+          )?.profileId,
+        ).toBeNull();
       }
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ email, password: 'OldWordPress123' })
-        .expect(401);
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ email, password: 'NewPassword123' })
-        .expect(200);
+      if (operation === 'reset') {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'OldWordPress123' })
+          .expect(401);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'NewPassword123' })
+          .expect(200);
+      } else {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'OldWordPress123' })
+          .expect(200);
+      }
       expect(
         (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
           ?.migrated,

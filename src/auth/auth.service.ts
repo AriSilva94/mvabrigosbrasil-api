@@ -2,6 +2,7 @@ import { randomBytes, createHash } from 'crypto';
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,7 +18,8 @@ import { MailService } from '../mail/mail.service';
 import { TokenService, Claims } from './jwt/token.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeRegisterType } from '../common/utils/register-type';
-import { UserOrigin } from '../generated/prisma/enums';
+import { UserOrigin, UserRole } from '../generated/prisma/enums';
+import { findLegacyByEmail } from './legacy/legacy-email';
 import type { Env } from '../config/env.validation';
 import type { RegisterDto } from './dto/register.dto';
 import type { User } from '../generated/prisma/client';
@@ -34,6 +36,14 @@ function pwdResetKey(tokenHash: string): string {
 const PWD_RESET_TTL_SECONDS = 60 * 60;
 const LEGACY_RESET_PREFIX = 'legacy:';
 const MIN_PASSWORD_LENGTH = 6;
+// `admin` e `gerente` só são atribuídos pela administração, nunca por quem
+// se cadastra.
+const SELF_REGISTER_ROLES = new Set<UserRole>([
+  UserRole.abrigo,
+  UserRole.voluntario,
+]);
+const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_EMAIL_LENGTH = 254;
 
 export type LoginResult = {
   userId: string;
@@ -116,9 +126,10 @@ export class AuthService {
     }
 
     const user = await this.usersService.findByEmail(normalizedEmail);
-    const legacy = await this.prisma.wpUserLegacy.findFirst({
-      where: { userEmail: { equals: normalizedEmail, mode: 'insensitive' } },
-    });
+    const [legacy = null] = await findLegacyByEmail(
+      this.prisma,
+      normalizedEmail,
+    );
 
     let authenticatedUser: User | null = null;
     let migrated: boolean | null = null;
@@ -158,6 +169,9 @@ export class AuthService {
           user,
         );
         migrated = false;
+        // A conta em `users` passou a ter a senha do WordPress: sessões
+        // abertas com a senha anterior não podem sobreviver.
+        if (user) await this.sessionService.revokeAll(user.id);
       }
     }
 
@@ -209,15 +223,22 @@ export class AuthService {
       });
     }
 
+    if (
+      normalizedEmail.length > MAX_EMAIL_LENGTH ||
+      !EMAIL_FORMAT.test(normalizedEmail)
+    ) {
+      throw new BadRequestException({ error: 'E-mail inválido.' });
+    }
+
     if (normalizedPassword.length < 8) {
       throw new BadRequestException({
         error: 'A senha deve ter pelo menos 8 caracteres.',
       });
     }
 
-    const existing = await this.usersService.findByEmail(normalizedEmail);
-    if (existing) {
-      throw new ConflictException({ error: 'E-mail já cadastrado.' });
+    const requestedRole = normalizeRegisterType(dto.registerType);
+    if (requestedRole && !SELF_REGISTER_ROLES.has(requestedRole)) {
+      throw new BadRequestException({ error: 'Tipo de cadastro inválido.' });
     }
 
     const teamOnly = dto.teamOnly === true;
@@ -226,8 +247,32 @@ export class AuthService {
         error: 'É necessário estar logado para criar acessos da equipe.',
       });
     }
+    // Mesma regra da tela /equipe: só o titular ativo de um abrigo cria
+    // acessos, e o acesso criado é sempre de abrigo.
+    if (
+      teamOnly &&
+      (actor?.role !== UserRole.abrigo ||
+        actor.isTeamOnly ||
+        actor.teamDisabled)
+    ) {
+      throw new ForbiddenException({
+        error: 'Sem permissão para criar acessos da equipe.',
+      });
+    }
 
-    const role = normalizeRegisterType(dto.registerType) ?? 'abrigo';
+    // O legado do WordPress que ainda não migrou também é dono do e-mail:
+    // sem isto, quem cadastrasse o e-mail dele herdaria abrigo/voluntário.
+    const [existing, [legacy]] = await Promise.all([
+      this.usersService.findByEmail(normalizedEmail),
+      findLegacyByEmail(this.prisma, normalizedEmail),
+    ]);
+    if (existing || legacy) {
+      throw new ConflictException({ error: 'E-mail já cadastrado.' });
+    }
+
+    const role = teamOnly
+      ? UserRole.abrigo
+      : (requestedRole ?? UserRole.abrigo);
     const passwordHash = await this.passwordService.hash(normalizedPassword);
 
     const created = await this.prisma.user.create({
@@ -384,11 +429,8 @@ export class AuthService {
 
     // Legado WordPress que nunca logou ainda não tem conta em `users`; a
     // redefinição conclui a migração dele com a senha nova.
-    const legacy = await this.prisma.wpUserLegacy.findFirst({
-      where: {
-        userEmail: { equals: normalizedEmail, mode: 'insensitive' },
-        migrated: false,
-      },
+    const [legacy] = await findLegacyByEmail(this.prisma, normalizedEmail, {
+      pendingOnly: true,
     });
     if (legacy?.userEmail) {
       await this.sendResetLink(
@@ -455,7 +497,11 @@ export class AuthService {
     plainPassword: string,
   ): Promise<string> {
     const passwordHash = await this.passwordService.hash(plainPassword);
-    await this.legacyMigrationService.setPassword(userId, passwordHash);
+    // O token de recuperação prova posse do e-mail, então o legado pendente
+    // com o mesmo e-mail pode ser vinculado a esta conta.
+    await this.legacyMigrationService.setPassword(userId, passwordHash, {
+      claimLegacy: true,
+    });
     return userId;
   }
 
@@ -520,9 +566,12 @@ export class AuthService {
     }
 
     const passwordHash = await this.passwordService.hash(normalizedNewPassword);
+    // Saber a senha desta conta não prova posse do e-mail: o legado pendente
+    // com o mesmo e-mail só pode ser assumido pela recuperação de senha.
     await this.legacyMigrationService.setPassword(
       (user as User).id,
       passwordHash,
+      { claimLegacy: false },
     );
     await this.sessionService.revokeAll(claims.sub, claims.sid);
 
