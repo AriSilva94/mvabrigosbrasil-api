@@ -120,7 +120,7 @@ export function mapAuthUserToUser(row: AuthUserRow): UserInsert {
   };
 }
 
-const SELECT_JOINED_USERS = `
+export const SELECT_JOINED_USERS = `
   SELECT
     u.id,
     u.email,
@@ -143,7 +143,7 @@ const SELECT_JOINED_USERS = `
 
 const BATCH_SIZE = 200;
 
-const INSERT_COLUMNS = [
+export const INSERT_COLUMNS = [
   'id',
   'email',
   'password_hash',
@@ -160,7 +160,7 @@ const INSERT_COLUMNS = [
   'updated_at',
 ] as const;
 
-function toParamRow(u: UserInsert): unknown[] {
+export function toParamRow(u: UserInsert): unknown[] {
   return [
     u.id,
     u.email,
