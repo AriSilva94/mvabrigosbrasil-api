@@ -170,15 +170,27 @@ describe('Global guards + throttling (e2e)', () => {
     for (let i = 0; i < 3; i += 1) {
       await request(server)
         .post('/api/v1/auth/forgot-password')
+        .set('X-Forwarded-For', '203.0.113.10')
         .send({})
         .expect(200);
     }
 
     const res = await request(server)
       .post('/api/v1/auth/forgot-password')
+      .set('X-Forwarded-For', '203.0.113.10')
       .send({})
       .expect(429);
 
     expect(res.body).toHaveProperty('error');
+  });
+
+  it('does not throttle internal server-side calls without proxy headers', async () => {
+    const server = app.getHttpServer();
+    for (let i = 0; i < 5; i += 1) {
+      await request(server)
+        .post('/api/v1/auth/forgot-password')
+        .send({})
+        .expect(200);
+    }
   });
 });
