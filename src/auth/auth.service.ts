@@ -130,7 +130,13 @@ export class AuthService {
       );
       if (r.valid) {
         if (r.needsRehash) {
-          await this.rehash(user.id, normalizedPassword);
+          const unchanged = await this.rehash(
+            user.id,
+            normalizedPassword,
+            user.passwordHash,
+          );
+          if (!unchanged)
+            throw new UnauthorizedException({ error: 'Senha inválida' });
         }
         authenticatedUser = user;
         migrated = true;
@@ -408,10 +414,7 @@ export class AuthService {
     }
 
     const passwordHash = await this.passwordService.hash(normalizedPassword);
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { passwordHash },
-    });
+    await this.legacyMigrationService.setPassword(userId, passwordHash);
     await this.redisService.client.del(key);
     await this.sessionService.revokeAll(userId);
 
@@ -451,30 +454,36 @@ export class AuthService {
     }
 
     const passwordHash = await this.passwordService.hash(normalizedNewPassword);
-    await this.prisma.user.update({
-      where: { id: (user as User).id },
-      data: { passwordHash },
-    });
+    await this.legacyMigrationService.setPassword(
+      (user as User).id,
+      passwordHash,
+    );
     await this.sessionService.revokeAll(claims.sub, claims.sid);
 
     return { ok: true };
   }
 
   // Rehash de senha legada gravada em `users.passwordHash` (import parcial —
-  // doc 03 §8). Falha aqui NÃO bloqueia o login (doc 03 §5): apenas loga e
-  // segue, pois a senha já foi validada contra o hash antigo.
-  private async rehash(userId: string, plainPassword: string): Promise<void> {
+  // doc 03 §8). Falha de persistência não bloqueia o login, mas um hash
+  // alterado por outra operação invalida esta tentativa de autenticação.
+  private async rehash(
+    userId: string,
+    plainPassword: string,
+    previousHash: string,
+  ): Promise<boolean> {
     try {
       const newHash = await this.passwordService.hash(plainPassword);
-      await this.prisma.user.update({
-        where: { id: userId },
+      const updated = await this.prisma.user.updateMany({
+        where: { id: userId, passwordHash: previousHash },
         data: { passwordHash: newHash },
       });
+      return updated.count === 1;
     } catch (err) {
       this.logger.error(
         `Falha ao regravar passwordHash do usuário ${userId} após rehash`,
         err instanceof Error ? err.stack : String(err),
       );
+      return true;
     }
   }
 }

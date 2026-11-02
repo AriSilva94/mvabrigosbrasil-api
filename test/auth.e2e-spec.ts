@@ -12,6 +12,8 @@ import { PrismaService } from './../src/prisma/prisma.service';
 import { RedisService } from './../src/redis/redis.service';
 import { refreshRotationGraceKey } from './../src/redis/session.keys';
 import { TokenService } from './../src/auth/jwt/token.service';
+import { AuthService } from './../src/auth/auth.service';
+import { PasswordService } from './../src/auth/password/password.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 
 // Doc 03 §12 (docs/nestjs-migration/03-auth-e-senhas.md, front repo): the 16
@@ -862,6 +864,162 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
       migrated: true,
       postType: 'voluntario',
     });
+  });
+
+  it.each(['reset', 'change'] as const)(
+    '%s closes legacy fallback and keeps pending shelter/volunteer links',
+    async (operation) => {
+      const caseNo = operation === 'reset' ? 17 : 18;
+      const legacyId = BigInt(900000 + caseNo);
+      const shelterPostId = 900000 + caseNo * 10;
+      const volunteerPostId = shelterPostId + 1;
+      const email = EMAIL(caseNo);
+      const user = await prisma.user.create({
+        data: {
+          email,
+          passwordHash: await bcrypt.hash('CurrentPassword123', 4),
+        },
+      });
+      userIds.push(user.id);
+      legacyIds.push(legacyId);
+      await prisma.wpUserLegacy.create({
+        data: {
+          id: legacyId,
+          userLogin: `case${caseNo}`,
+          userEmail: email,
+          userPass: buildMd5Hash('OldWordPress123'),
+          migrated: false,
+        },
+      });
+      for (const [id, postType] of [
+        [shelterPostId, 'abrigo'],
+        [volunteerPostId, 'voluntario'],
+      ] as const) {
+        postIds.push(BigInt(id));
+        await prisma.wpPostRaw.create({
+          data: {
+            id: BigInt(id),
+            postAuthor: legacyId,
+            postType,
+            postStatus: 'publish',
+          },
+        });
+      }
+      shelterWpPostIds.push(shelterPostId);
+      volunteerWpPostIds.push(volunteerPostId);
+      await createUnlinkedShelter(`Case ${caseNo}`, shelterPostId);
+      await prisma.volunteer.create({
+        data: { wpPostId: volunteerPostId, name: `Case ${caseNo}` },
+      });
+
+      const previous = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'CurrentPassword123' })
+        .expect(200);
+      if (operation === 'reset') {
+        const token = randomBytes(32).toString('base64url');
+        const key = `pwdreset:${sha256(token)}`;
+        redisPwdResetKeys.push(key);
+        await redis.client.set(key, user.id, 'EX', 60);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/reset-password')
+          .send({ token, password: 'NewPassword123' })
+          .expect(200);
+      } else {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/change-password')
+          .set('Cookie', previous.headers['set-cookie'] as unknown as string[])
+          .send({
+            currentPassword: 'CurrentPassword123',
+            newPassword: 'NewPassword123',
+          })
+          .expect(200);
+      }
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'OldWordPress123' })
+        .expect(401);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: 'NewPassword123' })
+        .expect(200);
+      expect(
+        (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
+          ?.migrated,
+      ).toBe(true);
+      expect(
+        (
+          await prisma.shelter.findUnique({
+            where: { wpPostId: shelterPostId },
+          })
+        )?.profileId,
+      ).toBe(user.id);
+      expect(
+        (
+          await prisma.volunteer.findUnique({
+            where: { wpPostId: volunteerPostId },
+          })
+        )?.ownerProfileId,
+      ).toBe(user.id);
+      expect(
+        (await prisma.user.findUnique({ where: { id: user.id } }))?.wpUserId,
+      ).toBe(Number(legacyId));
+    },
+  );
+
+  it('rejects a stale rehash if a password reset completes while bcrypt is running', async () => {
+    const user = await prisma.user.create({
+      data: { email: EMAIL(19), passwordHash: buildMd5Hash('OldPassword123') },
+    });
+    userIds.push(user.id);
+    const passwords = app.get(PasswordService);
+    const originalHash = passwords.hash.bind(
+      passwords,
+    ) as PasswordService['hash'];
+    let resume!: () => void;
+    let started!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const spy = jest
+      .spyOn(passwords, 'hash')
+      .mockImplementation(async (plain) => {
+        if (plain === 'OldPassword123') {
+          started();
+          await blocked;
+        }
+        return originalHash(plain);
+      });
+    const auth = app.get(AuthService);
+    const pending = auth.login(user.email, 'OldPassword123');
+    // A rejeição pode ocorrer assim que o bcrypt for liberado.
+    const outcome = pending.then(
+      () => 200,
+      (error: unknown) => (error as { status: number }).status,
+    );
+    try {
+      await entered;
+      const token = randomBytes(32).toString('base64url');
+      const key = `pwdreset:${sha256(token)}`;
+      redisPwdResetKeys.push(key);
+      await redis.client.set(key, user.id, 'EX', 60);
+      await auth.resetPassword(token, 'NewPassword123');
+      resume();
+      expect(await outcome).toBe(401);
+      const saved = await prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+      });
+      expect(await bcrypt.compare('NewPassword123', saved.passwordHash!)).toBe(
+        true,
+      );
+    } finally {
+      resume();
+      await outcome;
+      spy.mockRestore();
+    }
   });
 
   it('Case 16: legacy has BOTH abrigo and voluntario posts -> links both', async () => {

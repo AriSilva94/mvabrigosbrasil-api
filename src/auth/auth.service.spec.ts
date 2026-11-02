@@ -59,7 +59,7 @@ describe('AuthService.login', () => {
   let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
   let prisma: {
     wpUserLegacy: { findFirst: jest.Mock };
-    user: { update: jest.Mock };
+    user: { updateMany: jest.Mock };
   };
   let service: AuthService;
 
@@ -83,7 +83,7 @@ describe('AuthService.login', () => {
     };
     prisma = {
       wpUserLegacy: { findFirst: jest.fn().mockResolvedValue(null) },
-      user: { update: jest.fn().mockResolvedValue(undefined) },
+      user: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     };
 
     service = new AuthService(
@@ -130,7 +130,7 @@ describe('AuthService.login', () => {
     expect(result.sid).toBe('sid-1');
     expect(result.rt).toBe('rt-1');
     expect(result.at).toBe('signed-jwt');
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(prisma.user.updateMany).not.toHaveBeenCalled();
     expect(legacyMigrationService.migrate).not.toHaveBeenCalled();
     expect(sessionService.create).toHaveBeenCalledWith(user.id);
   });
@@ -147,8 +147,8 @@ describe('AuthService.login', () => {
 
     expect(result.migrated).toBe(true);
     expect(passwordService.hash).toHaveBeenCalledWith('secret');
-    expect(prisma.user.update).toHaveBeenCalledWith({
-      where: { id: user.id },
+    expect(prisma.user.updateMany).toHaveBeenCalledWith({
+      where: { id: user.id, passwordHash: user.passwordHash },
       data: { passwordHash: 'new-bcrypt-hash' },
     });
   });
@@ -160,7 +160,7 @@ describe('AuthService.login', () => {
       valid: true,
       needsRehash: true,
     });
-    prisma.user.update.mockRejectedValue(new Error('db down'));
+    prisma.user.updateMany.mockRejectedValue(new Error('db down'));
 
     const result = await service.login('joao@example.com', 'secret');
 
@@ -788,6 +788,7 @@ describe('AuthService.resetPassword', () => {
   let prisma: { user: { update: jest.Mock } };
   let redisClient: { get: jest.Mock; del: jest.Mock };
   let redisService: { client: unknown };
+  let legacyMigrationService: { setPassword: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
@@ -800,10 +801,13 @@ describe('AuthService.resetPassword', () => {
     };
     redisService = { client: redisClient };
 
+    legacyMigrationService = {
+      setPassword: jest.fn().mockResolvedValue(undefined),
+    };
     service = new AuthService(
       {} as unknown as UsersService,
       passwordService as unknown as PasswordService,
-      {} as unknown as LegacyMigrationService,
+      legacyMigrationService as unknown as LegacyMigrationService,
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
@@ -822,10 +826,10 @@ describe('AuthService.resetPassword', () => {
     expect(result).toEqual({ ok: true });
     expect(redisClient.get).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
     expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
-    expect(prisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'user-1' },
-      data: { passwordHash: 'new-bcrypt-hash' },
-    });
+    expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
+      'user-1',
+      'new-bcrypt-hash',
+    );
     expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
   });
@@ -839,7 +843,7 @@ describe('AuthService.resetPassword', () => {
       status: 400,
       response: { error: 'Link inválido ou expirado' },
     });
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
@@ -858,6 +862,7 @@ describe('AuthService.changePassword', () => {
   let passwordService: jest.Mocked<Pick<PasswordService, 'verify' | 'hash'>>;
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
   let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
+  let legacyMigrationService: { setPassword: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
@@ -873,10 +878,13 @@ describe('AuthService.changePassword', () => {
       },
     };
 
+    legacyMigrationService = {
+      setPassword: jest.fn().mockResolvedValue(undefined),
+    };
     service = new AuthService(
       {} as unknown as UsersService,
       passwordService as unknown as PasswordService,
-      {} as unknown as LegacyMigrationService,
+      legacyMigrationService as unknown as LegacyMigrationService,
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
@@ -911,7 +919,7 @@ describe('AuthService.changePassword', () => {
       status: 400,
       response: { error: 'Senha atual incorreta.' },
     });
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
@@ -931,7 +939,7 @@ describe('AuthService.changePassword', () => {
       status: 400,
       response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
     });
-    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
   });
 
   it('success: updates passwordHash and revokes all sessions except the current one', async () => {
@@ -952,10 +960,10 @@ describe('AuthService.changePassword', () => {
 
     expect(result).toEqual({ ok: true });
     expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
-    expect(prisma.user.update).toHaveBeenCalledWith({
-      where: { id: 'user-1' },
-      data: { passwordHash: 'new-bcrypt-hash' },
-    });
+    expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
+      'user-1',
+      'new-bcrypt-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith(
       'user-1',
       'sid-current',
