@@ -34,13 +34,20 @@ function pwdResetKey(tokenHash: string): string {
   return `pwdreset:${tokenHash}`;
 }
 
+// Tokens emitidos por titular, para invalidar os links ainda pendentes quando
+// a senha muda por qualquer caminho.
+function pwdResetSubjectKey(subject: string): string {
+  return `pwdreset_subject:${subject}`;
+}
+
 // Doc 03 §10: link válido por 60 minutos, uso único.
 const PWD_RESET_TTL_SECONDS = 60 * 60;
 const LEGACY_RESET_PREFIX = 'legacy:';
 // Mesma resposta para e-mail inexistente e senha errada: o login não pode
 // servir para descobrir quem tem conta.
 const INVALID_CREDENTIALS = 'E-mail ou senha inválidos.';
-const MIN_PASSWORD_LENGTH = 6;
+const MIN_PASSWORD_LENGTH = 8;
+const PASSWORD_TOO_SHORT = 'A senha deve ter pelo menos 8 caracteres.';
 // O bcrypt ignora tudo depois do 72º byte: senhas maiores dariam a falsa
 // impressão de que o restante conta.
 const MAX_PASSWORD_BYTES = 72;
@@ -145,11 +152,13 @@ export class AuthService {
       throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
     }
 
-    const user = await this.usersService.findByEmail(normalizedEmail);
-    const [legacy = null] = await findLegacyByEmail(
-      this.prisma,
-      normalizedEmail,
-    );
+    // Senha trocada/redefinida depois deste instante invalida este login,
+    // mesmo que a senha antiga já tenha sido conferida.
+    let credentialCheckedAt = Date.now();
+    const [user, [legacy = null]] = await Promise.all([
+      this.usersService.findByEmail(normalizedEmail),
+      findLegacyByEmail(this.prisma, normalizedEmail),
+    ]);
 
     let authenticatedUser: User | null = null;
     let migrated: boolean | null = null;
@@ -191,7 +200,10 @@ export class AuthService {
         migrated = false;
         // A conta em `users` passou a ter a senha do WordPress: sessões
         // abertas com a senha anterior não podem sobreviver.
-        if (user) await this.sessionService.revokeAll(user.id);
+        if (user) {
+          await this.sessionService.revokeAll(user.id);
+          credentialCheckedAt = Date.now();
+        }
       }
     }
 
@@ -207,6 +219,15 @@ export class AuthService {
 
     const role = await this.usersService.resolveRole(authenticatedUser);
     const { sid, rt } = await this.sessionService.create(authenticatedUser.id);
+    if (
+      await this.sessionService.revokedSince(
+        authenticatedUser.id,
+        credentialCheckedAt,
+      )
+    ) {
+      await this.sessionService.revoke(sid);
+      throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
+    }
     const claims: Claims = {
       sub: authenticatedUser.id,
       email: authenticatedUser.email,
@@ -252,10 +273,8 @@ export class AuthService {
       throw new BadRequestException({ error: 'E-mail inválido.' });
     }
 
-    if (normalizedPassword.length < 8) {
-      throw new BadRequestException({
-        error: 'A senha deve ter pelo menos 8 caracteres.',
-      });
+    if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
+      throw new BadRequestException({ error: PASSWORD_TOO_SHORT });
     }
     assertPasswordFitsBcrypt(normalizedPassword);
 
@@ -467,13 +486,14 @@ export class AuthService {
 
   private async sendResetLink(email: string, subject: string): Promise<void> {
     const token = randomBytes(32).toString('base64url');
+    const tokenHash = sha256(token);
 
-    await this.redisService.client.set(
-      pwdResetKey(sha256(token)),
-      subject,
-      'EX',
-      PWD_RESET_TTL_SECONDS,
-    );
+    await this.redisService.client
+      .multi()
+      .set(pwdResetKey(tokenHash), subject, 'EX', PWD_RESET_TTL_SECONDS)
+      .sadd(pwdResetSubjectKey(subject), tokenHash)
+      .expire(pwdResetSubjectKey(subject), PWD_RESET_TTL_SECONDS)
+      .exec();
 
     // `new URL` absorve a barra final que o APP_URL pode ter no ambiente.
     const resetLink = new URL(
@@ -488,20 +508,22 @@ export class AuthService {
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
-  // é apagada assim que consumida (com sucesso), e `revokeAll` derruba todas
-  // as sessões existentes do usuário (login forçado em qualquer dispositivo
-  // depois de uma troca de senha via recuperação).
+  // é consumida na leitura (mesmo que a redefinição falhe depois, o usuário
+  // pede outro link), os demais links pendentes do titular são invalidados e
+  // `revokeAll` derruba todas as sessões existentes do usuário (login forçado
+  // em qualquer dispositivo depois de uma troca de senha via recuperação).
   async resetPassword(token: string, password: string): Promise<{ ok: true }> {
     const normalizedPassword = (password ?? '').trim();
     if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
-      throw new BadRequestException({
-        error: 'A senha deve ter no mínimo 6 caracteres.',
-      });
+      throw new BadRequestException({ error: PASSWORD_TOO_SHORT });
     }
     assertPasswordFitsBcrypt(normalizedPassword);
 
-    const key = pwdResetKey(sha256(token ?? ''));
-    const subject = await this.redisService.client.get(key);
+    // GETDEL: com GET seguido de DEL, duas requisições simultâneas com o
+    // mesmo link passavam ambas.
+    const subject = await this.redisService.client.getdel(
+      pwdResetKey(sha256(token ?? '')),
+    );
     if (!subject) {
       throw new BadRequestException({ error: 'Link inválido ou expirado' });
     }
@@ -513,10 +535,20 @@ export class AuthService {
         )
       : await this.setNewPassword(subject, normalizedPassword);
 
-    await this.redisService.client.del(key);
+    await this.invalidateResetTokens(subject, userId);
     await this.sessionService.revokeAll(userId);
 
     return { ok: true };
+  }
+
+  private async invalidateResetTokens(...subjects: string[]): Promise<void> {
+    const keys = [...new Set(subjects)].map(pwdResetSubjectKey);
+    const hashes = (
+      await Promise.all(
+        keys.map((key) => this.redisService.client.smembers(key)),
+      )
+    ).flat();
+    await this.redisService.client.del(...keys, ...hashes.map(pwdResetKey));
   }
 
   private async setNewPassword(
@@ -587,9 +619,7 @@ export class AuthService {
 
     const normalizedNewPassword = (newPassword ?? '').trim();
     if (normalizedNewPassword.length < MIN_PASSWORD_LENGTH) {
-      throw new BadRequestException({
-        error: 'A senha deve ter no mínimo 6 caracteres.',
-      });
+      throw new BadRequestException({ error: PASSWORD_TOO_SHORT });
     }
     assertPasswordFitsBcrypt(normalizedNewPassword);
 
@@ -601,6 +631,7 @@ export class AuthService {
       passwordHash,
       { claimLegacy: false },
     );
+    await this.invalidateResetTokens(claims.sub);
     await this.sessionService.revokeAll(claims.sub, claims.sid);
 
     return { ok: true };

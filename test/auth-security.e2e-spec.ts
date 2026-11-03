@@ -452,4 +452,125 @@ describe('Auth security regressions (E2E)', () => {
         .expect(400, { error: 'A senha deve ter no máximo 72 caracteres.' });
     });
   });
+
+  describe('Low: password reset links', () => {
+    async function requestLink(email: string): Promise<string> {
+      sendPasswordReset.mockClear();
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/forgot-password')
+        .send({ email })
+        .expect(200);
+      const [, link] = sendPasswordReset.mock.calls[0] as [string, string];
+      return new URL(link).searchParams.get('token')!;
+    }
+
+    it('the same link used twice concurrently succeeds only once', async () => {
+      const email = EMAIL('low-race');
+      await createUser(email);
+      const token = await requestLink(email);
+
+      const results = await Promise.all(
+        [1, 2].map(() =>
+          request(app.getHttpServer())
+            .post('/api/v1/auth/reset-password')
+            .send({ token, password: 'RaceReset!2026' }),
+        ),
+      );
+
+      expect(results.map((r) => r.status).sort()).toEqual([200, 400]);
+    });
+
+    it('a successful reset invalidates the other pending links', async () => {
+      const email = EMAIL('low-pending');
+      await createUser(email);
+      const older = await requestLink(email);
+      const newer = await requestLink(email);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token: newer, password: 'NewerReset!2026' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token: older, password: 'OlderReset!2026' })
+        .expect(400);
+    });
+
+    it('change-password invalidates pending links', async () => {
+      const email = EMAIL('low-change-links');
+      await createUser(email);
+      const token = await requestLink(email);
+      const cookies = await login(email);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/change-password')
+        .set('Cookie', cookies)
+        .send({ currentPassword: PASSWORD, newPassword: 'Changed!2026' })
+        .expect(200);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token, password: 'Stolen!2026x' })
+        .expect(400);
+    });
+
+    it('new passwords need at least 8 characters on every path', async () => {
+      const email = EMAIL('low-min');
+      await createUser(email);
+      const token = await requestLink(email);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/reset-password')
+        .send({ token, password: '1234567' })
+        .expect(400, { error: 'A senha deve ter pelo menos 8 caracteres.' });
+    });
+  });
+
+  describe('Low: disabled team members', () => {
+    it('cannot read the owner dynamics after logging in again', async () => {
+      const owner = EMAIL('low-team-owner');
+      await createUser(owner);
+      const ownerRow = await prisma.user.findUniqueOrThrow({
+        where: { email: owner },
+      });
+      const member = EMAIL('low-team-member');
+      emails.push(member);
+      await prisma.user.create({
+        data: {
+          email: member,
+          passwordHash: await bcrypt.hash(PASSWORD, 4),
+          role: 'abrigo',
+          isTeamOnly: true,
+          teamDisabled: true,
+          creatorProfileId: ownerRow.id,
+        },
+      });
+      const cookies = await login(member);
+
+      for (const path of ['/api/v1/dynamics', '/api/v1/dynamics/summary']) {
+        await request(app.getHttpServer())
+          .get(path)
+          .set('Cookie', cookies)
+          .expect(403);
+      }
+    });
+  });
+
+  describe('Low: cookie lifetime follows the configured TTLs', () => {
+    it('mv_at and mv_rt Max-Age match AUTH_ACCESS_TTL and AUTH_REFRESH_TTL', async () => {
+      const email = EMAIL('low-cookies');
+      await createUser(email);
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({ email, password: PASSWORD })
+        .expect(200);
+      const setCookie = res.headers['set-cookie'] as unknown as string[];
+
+      expect(setCookie.find((c) => c.startsWith('mv_at='))).toContain(
+        'Max-Age=900;',
+      );
+      expect(setCookie.find((c) => c.startsWith('mv_rt='))).toContain(
+        'Max-Age=2592000;',
+      );
+    });
+  });
 });

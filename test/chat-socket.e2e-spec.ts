@@ -17,6 +17,8 @@ import {
 import { RedisIoAdapter } from './../src/chat/redis-io.adapter';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { RedisService } from './../src/redis/redis.service';
+import { sessionKey } from './../src/redis/session.keys';
 import {
   authCookie,
   cleanupChatPeople,
@@ -149,6 +151,18 @@ describe('Chat socket gateway (e2e)', () => {
     app.get(ChatGateway).server.to(userRoom(userA)).emit('ping-test', 1);
 
     await expect(received).resolves.toBe(1);
+  });
+
+  it('disconnects on the next heartbeat once the session is revoked', async () => {
+    const revoked = claims(randomUUID());
+    const socket = connect(await tokens.sign(revoked));
+    await waitFor(socket, 'connect');
+
+    await app.get(RedisService).client.del(sessionKey(revoked.sid));
+    const reason = waitFor<string>(socket, 'disconnect', 4000);
+    socket.emit('chat:heartbeat');
+
+    await expect(reason).resolves.toBe('io server disconnect');
   });
 
   it('disconnects when the access token expires', async () => {

@@ -13,6 +13,11 @@ import { AuthService } from './auth.service';
 import { TokenService } from './jwt/token.service';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
 
+const cookieEnv: Record<string, string> = {
+  AUTH_ACCESS_TTL: '15m',
+  AUTH_REFRESH_TTL: '30d',
+};
+
 describe('AuthController (POST /auth/login)', () => {
   let app: INestApplication;
   const authService = {
@@ -31,7 +36,7 @@ describe('AuthController (POST /auth/login)', () => {
         { provide: TokenService, useValue: tokenService },
         {
           provide: ConfigService,
-          useValue: { get: () => false },
+          useValue: { get: (key: string) => cookieEnv[key] ?? false },
         },
       ],
     }).compile();
@@ -126,7 +131,10 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
       providers: [
         { provide: AuthService, useValue: authService },
         { provide: TokenService, useValue: tokenService },
-        { provide: ConfigService, useValue: { get: () => false } },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => cookieEnv[key] ?? false },
+        },
       ],
     }).compile();
 
@@ -316,7 +324,10 @@ describe('AuthController (POST /auth/refresh, POST /auth/logout)', () => {
       providers: [
         { provide: AuthService, useValue: authService },
         { provide: TokenService, useValue: tokenService },
-        { provide: ConfigService, useValue: { get: () => false } },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => cookieEnv[key] ?? false },
+        },
       ],
     }).compile();
 
@@ -485,7 +496,10 @@ describe('AuthController (POST /auth/forgot-password, /reset-password, /change-p
       providers: [
         { provide: AuthService, useValue: authService },
         { provide: TokenService, useValue: tokenService },
-        { provide: ConfigService, useValue: { get: () => false } },
+        {
+          provide: ConfigService,
+          useValue: { get: (key: string) => cookieEnv[key] ?? false },
+        },
       ],
     }).compile();
 

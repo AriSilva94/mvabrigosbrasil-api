@@ -52,7 +52,10 @@ function parseShelterWpPostId(value?: string): number | null {
 export class DynamicsController {
   constructor(private readonly dynamicsService: DynamicsService) {}
 
+  // Leituras também: o membro desativado lia os dados do abrigo do titular.
   @Get()
+  @RequireTeamActive()
+  @UseGuards(TeamActiveGuard)
   getDynamics(
     @CurrentUser() claims: Claims,
     @Query('shelter_id') shelterId?: string,
@@ -64,6 +67,8 @@ export class DynamicsController {
   }
 
   @Get('summary')
+  @RequireTeamActive()
+  @UseGuards(TeamActiveGuard)
   getSummary(
     @CurrentUser() claims: Claims,
     @Query('shelter_id') shelterId?: string,

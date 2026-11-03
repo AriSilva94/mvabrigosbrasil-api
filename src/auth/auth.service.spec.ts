@@ -65,7 +65,9 @@ describe('AuthService.login', () => {
   let legacyMigrationService: jest.Mocked<
     Pick<LegacyMigrationService, 'migrate'>
   >;
-  let sessionService: jest.Mocked<Pick<SessionService, 'create' | 'revokeAll'>>;
+  let sessionService: jest.Mocked<
+    Pick<SessionService, 'create' | 'revokeAll' | 'revokedSince' | 'revoke'>
+  >;
   let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
   let prisma: {
     user: { updateMany: jest.Mock };
@@ -88,6 +90,8 @@ describe('AuthService.login', () => {
     sessionService = {
       create: jest.fn().mockResolvedValue({ sid: 'sid-1', rt: 'rt-1' }),
       revokeAll: jest.fn().mockResolvedValue(undefined),
+      revokedSince: jest.fn().mockResolvedValue(false),
+      revoke: jest.fn().mockResolvedValue(undefined),
     };
     tokenService = {
       sign: jest.fn().mockResolvedValue('signed-jwt'),
@@ -216,6 +220,21 @@ describe('AuthService.login', () => {
     expect(sessionService.revokeAll.mock.invocationCallOrder[0]).toBeLessThan(
       sessionService.create.mock.invocationCallOrder[0],
     );
+  });
+
+  it('discards the new session when the password changed while this login was verifying it', async () => {
+    usersService.findByEmail.mockResolvedValue(makeUser());
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+    sessionService.revokedSince.mockResolvedValue(true);
+
+    await expect(
+      service.login('joao@example.com', 'old-secret'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(sessionService.revoke).toHaveBeenCalledWith('sid-1');
+    expect(tokenService.sign).not.toHaveBeenCalled();
   });
 
   it('R3: legacy migrated=true -> does NOT consult user_pass, 401 on wrong/legacy-only password', async () => {
@@ -835,7 +854,7 @@ function sha256(value: string): string {
 describe('AuthService.forgotPassword', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
   let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
-  let redisClient: { set: jest.Mock };
+  let redisClient: { set: jest.Mock; sadd: jest.Mock; multi: jest.Mock };
   let redisService: { client: unknown };
   let config: { get: jest.Mock };
   let prisma: object;
@@ -846,7 +865,19 @@ describe('AuthService.forgotPassword', () => {
     mailService = {
       sendPasswordReset: jest.fn().mockResolvedValue(undefined),
     };
-    redisClient = { set: jest.fn().mockResolvedValue('OK') };
+    redisClient = {
+      set: jest.fn(),
+      sadd: jest.fn(),
+      multi: jest.fn(() => {
+        const chain = {
+          set: (...args: unknown[]) => (redisClient.set(...args), chain),
+          sadd: (...args: unknown[]) => (redisClient.sadd(...args), chain),
+          expire: () => chain,
+          exec: () => Promise.resolve([]),
+        };
+        return chain;
+      }),
+    };
     redisService = { client: redisClient };
     config = { get: jest.fn().mockReturnValue('http://localhost:3000') };
     prisma = {};
@@ -967,7 +998,11 @@ describe('AuthService.resetPassword', () => {
     user: { update: jest.Mock };
     wpUserLegacy: { findUnique: jest.Mock };
   };
-  let redisClient: { get: jest.Mock; del: jest.Mock };
+  let redisClient: {
+    getdel: jest.Mock;
+    smembers: jest.Mock;
+    del: jest.Mock;
+  };
   let redisService: { client: unknown };
   let legacyMigrationService: { setPassword: jest.Mock; migrate: jest.Mock };
   let usersService: { findByEmail: jest.Mock };
@@ -981,7 +1016,8 @@ describe('AuthService.resetPassword', () => {
       wpUserLegacy: { findUnique: jest.fn() },
     };
     redisClient = {
-      get: jest.fn(),
+      getdel: jest.fn(),
+      smembers: jest.fn().mockResolvedValue(['other-token-hash']),
       del: jest.fn().mockResolvedValue(1),
     };
     redisService = { client: redisClient };
@@ -1006,26 +1042,35 @@ describe('AuthService.resetPassword', () => {
 
   it('valid token: updates passwordHash, deletes the reset key, revokes all sessions, returns {ok:true}', async () => {
     const token = 'plaintext-token-abc';
-    redisClient.get.mockResolvedValue('user-1');
+    redisClient.getdel.mockResolvedValue('user-1');
 
     const result = await service.resetPassword(token, 'newpassword123');
 
     expect(result).toEqual({ ok: true });
-    expect(redisClient.get).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
     expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',
       'new-bcrypt-hash',
       { claimLegacy: true },
     );
-    expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
+    // Os demais links pendentes do titular deixam de valer.
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:user-1',
+      'pwdreset:other-token-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
   });
 
   it('legacy token: migrates the WordPress user with the new password and links posts', async () => {
     const token = 'legacy-token';
     const legacy = makeLegacy({ id: 42n, migrated: false });
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(legacy);
     legacyMigrationService.migrate.mockResolvedValue(
       makeUser({ id: 'migrated-user' }),
@@ -1043,12 +1088,20 @@ describe('AuthService.resetPassword', () => {
       null,
     );
     expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
-    expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:legacy:42',
+      'pwdreset_subject:migrated-user',
+      'pwdreset:other-token-hash',
+      'pwdreset:other-token-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('migrated-user');
   });
 
   it('legacy token after the user already migrated by login: sets the password on that account', async () => {
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(
       makeLegacy({ id: 42n, migrated: true }),
     );
@@ -1068,7 +1121,7 @@ describe('AuthService.resetPassword', () => {
   });
 
   it('400 when the legacy record behind the token no longer exists', async () => {
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(null);
 
     await expect(
@@ -1087,11 +1140,11 @@ describe('AuthService.resetPassword', () => {
       status: 400,
       response: { error: 'A senha deve ter no máximo 72 caracteres.' },
     });
-    expect(redisClient.get).not.toHaveBeenCalled();
+    expect(redisClient.getdel).not.toHaveBeenCalled();
   });
 
   it('400 "Link inválido ou expirado" when token is absent/expired', async () => {
-    redisClient.get.mockResolvedValue(null);
+    redisClient.getdel.mockResolvedValue(null);
 
     await expect(
       service.resetPassword('missing-or-expired', 'newpassword123'),
@@ -1103,14 +1156,14 @@ describe('AuthService.resetPassword', () => {
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
-  it('400 when password is shorter than 6 characters (after trim)', async () => {
+  it('400 when password is shorter than 8 characters (after trim)', async () => {
     await expect(
-      service.resetPassword('some-token', '  12345 '),
+      service.resetPassword('some-token', '  1234567 '),
     ).rejects.toMatchObject({
       status: 400,
-      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+      response: { error: 'A senha deve ter pelo menos 8 caracteres.' },
     });
-    expect(redisClient.get).not.toHaveBeenCalled();
+    expect(redisClient.getdel).not.toHaveBeenCalled();
   });
 });
 
@@ -1119,6 +1172,7 @@ describe('AuthService.changePassword', () => {
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
   let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
   let legacyMigrationService: { setPassword: jest.Mock };
+  let redisClient: { smembers: jest.Mock; del: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
@@ -1137,6 +1191,10 @@ describe('AuthService.changePassword', () => {
     legacyMigrationService = {
       setPassword: jest.fn().mockResolvedValue(undefined),
     };
+    redisClient = {
+      smembers: jest.fn().mockResolvedValue(['pending-hash']),
+      del: jest.fn().mockResolvedValue(1),
+    };
     service = new AuthService(
       {} as unknown as UsersService,
       passwordService as unknown as PasswordService,
@@ -1144,7 +1202,7 @@ describe('AuthService.changePassword', () => {
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
-      {} as unknown as RedisService,
+      { client: redisClient } as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
     );
@@ -1179,7 +1237,7 @@ describe('AuthService.changePassword', () => {
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
-  it('400 when the new password is shorter than 6 characters (after trim)', async () => {
+  it('400 when the new password is shorter than 8 characters (after trim)', async () => {
     const claims = makeClaims({ sub: 'user-1', sid: 'sid-current' });
     prisma.user.findUnique.mockResolvedValue(
       makeUser({ id: 'user-1', passwordHash: 'old-hash' }),
@@ -1190,10 +1248,10 @@ describe('AuthService.changePassword', () => {
     });
 
     await expect(
-      service.changePassword(claims, 'current-ok', '  1234 '),
+      service.changePassword(claims, 'current-ok', '  1234567 '),
     ).rejects.toMatchObject({
       status: 400,
-      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+      response: { error: 'A senha deve ter pelo menos 8 caracteres.' },
     });
     expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
   });
@@ -1240,6 +1298,11 @@ describe('AuthService.changePassword', () => {
     expect(sessionService.revokeAll).toHaveBeenCalledWith(
       'user-1',
       'sid-current',
+    );
+    // Um link de recuperação pendente não pode desfazer a troca de senha.
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:user-1',
+      'pwdreset:pending-hash',
     );
   });
 });

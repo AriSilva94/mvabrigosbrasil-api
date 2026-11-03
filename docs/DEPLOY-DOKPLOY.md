@@ -59,7 +59,7 @@ Configurar no runtime do frontend:
 Configurar no runtime da API:
 
 - DATABASE_URL e REDIS_URL de serviços exclusivos daquele ambiente.
-- AUTH_JWT_SECRET, APP_URL e COOKIE_SECURE=true com HTTPS.
+- AUTH_JWT_SECRET, APP_URL e COOKIE_SECURE=true com HTTPS. Com NODE_ENV=production e APP_URL https, a API não sobe com COOKIE_SECURE=false (o deploy falha no healthcheck e a revisão anterior continua no ar).
 - INTERNAL_API_TOKEN, o mesmo do frontend. Só as chamadas server-side do Next que enviam esse segredo ficam fora do rate limit; sem ele, a API registra um aviso e volta a isentar qualquer chamada da rede privada sem cabeçalho de proxy.
 - SMTP_HOST (smtp.hostinger.com), SMTP_PORT (465), SMTP_SECURE (true), SMTP_USER (caixa de e-mail completa), SMTP_PASS e MAIL_FROM quando o envio de e-mail estiver habilitado. Sem SMTP_HOST a API não envia e-mail e, em produção, só registra um aviso no log.
 
