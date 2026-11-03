@@ -9,6 +9,7 @@ import { AppModule } from '../src/app.module';
 import { TokenService, type Claims } from '../src/auth/jwt/token.service';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { tokensWithSessions } from './helpers/active-session';
 
 const NOOP_THROTTLER_STORAGE: ThrottlerStorage = {
   increment: () =>
@@ -89,7 +90,7 @@ describe('Data domains E2E - volunteers (slice B)', () => {
     await app.init();
 
     prisma = app.get(PrismaService);
-    tokenService = app.get(TokenService);
+    tokenService = tokensWithSessions(app);
     baseline = {
       users: await prisma.user.count(),
       volunteers: await prisma.volunteer.count(),

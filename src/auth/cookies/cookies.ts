@@ -1,9 +1,16 @@
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
 import type { Env } from '../../config/env.validation';
+import { parseDurationToSeconds } from '../../redis/session.service';
 
-const ACCESS_TOKEN_MAX_AGE_MS = 15 * 60 * 1000; // 15 minutes
-const REFRESH_TOKEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Mesma duração do JWT e da sessão no Redis: valores fixos aqui divergiam
+// de AUTH_ACCESS_TTL/AUTH_REFRESH_TTL quando o ambiente os alterava.
+function maxAgeMs(
+  config: ConfigService<Env, true>,
+  key: 'AUTH_ACCESS_TTL' | 'AUTH_REFRESH_TTL',
+): number {
+  return parseDurationToSeconds(config.get(key, { infer: true })) * 1000;
+}
 
 /**
  * Sets both access and refresh token cookies on the response.
@@ -29,14 +36,14 @@ export function setAuthCookies(
   res.cookie('mv_at', tokens.at, {
     ...commonOptions,
     path: '/',
-    maxAge: ACCESS_TOKEN_MAX_AGE_MS,
+    maxAge: maxAgeMs(config, 'AUTH_ACCESS_TTL'),
   });
 
   // Set refresh token cookie
   res.cookie('mv_rt', tokens.rt, {
     ...commonOptions,
     path: '/',
-    maxAge: REFRESH_TOKEN_MAX_AGE_MS,
+    maxAge: maxAgeMs(config, 'AUTH_REFRESH_TTL'),
   });
 }
 

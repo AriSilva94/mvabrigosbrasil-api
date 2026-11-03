@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
@@ -12,6 +12,14 @@ import type { MailService } from '../mail/mail.service';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import type { User, WpUserLegacy } from '../generated/prisma/client';
+import { findLegacyByEmail } from './legacy/legacy-email';
+
+jest.mock('./legacy/legacy-email');
+const findLegacyByEmailMock = jest.mocked(findLegacyByEmail);
+
+beforeEach(() => {
+  findLegacyByEmailMock.mockReset().mockResolvedValue([]);
+});
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
@@ -51,14 +59,17 @@ describe('AuthService.login', () => {
   let usersService: jest.Mocked<
     Pick<UsersService, 'findByEmail' | 'resolveRole'>
   >;
-  let passwordService: jest.Mocked<Pick<PasswordService, 'verify' | 'hash'>>;
+  let passwordService: jest.Mocked<
+    Pick<PasswordService, 'verify' | 'hash' | 'burnVerification'>
+  >;
   let legacyMigrationService: jest.Mocked<
     Pick<LegacyMigrationService, 'migrate'>
   >;
-  let sessionService: jest.Mocked<Pick<SessionService, 'create'>>;
+  let sessionService: jest.Mocked<
+    Pick<SessionService, 'create' | 'revokeAll' | 'revokedSince' | 'revoke'>
+  >;
   let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
   let prisma: {
-    wpUserLegacy: { findFirst: jest.Mock };
     user: { updateMany: jest.Mock };
   };
   let service: AuthService;
@@ -71,18 +82,21 @@ describe('AuthService.login', () => {
     passwordService = {
       verify: jest.fn(),
       hash: jest.fn().mockResolvedValue('new-bcrypt-hash'),
+      burnVerification: jest.fn().mockResolvedValue(undefined),
     };
     legacyMigrationService = {
       migrate: jest.fn(),
     };
     sessionService = {
       create: jest.fn().mockResolvedValue({ sid: 'sid-1', rt: 'rt-1' }),
+      revokeAll: jest.fn().mockResolvedValue(undefined),
+      revokedSince: jest.fn().mockResolvedValue(false),
+      revoke: jest.fn().mockResolvedValue(undefined),
     };
     tokenService = {
       sign: jest.fn().mockResolvedValue('signed-jwt'),
     };
     prisma = {
-      wpUserLegacy: { findFirst: jest.fn().mockResolvedValue(null) },
       user: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
     };
 
@@ -171,7 +185,7 @@ describe('AuthService.login', () => {
   it('R2: no user password / R1 fails, legacy migrated=false and password valid -> migrates', async () => {
     const legacy = makeLegacy();
     usersService.findByEmail.mockResolvedValue(null);
-    prisma.wpUserLegacy.findFirst.mockResolvedValue(legacy);
+    findLegacyByEmailMock.mockResolvedValue([legacy]);
     passwordService.verify.mockResolvedValue({
       valid: true,
       needsRehash: true,
@@ -191,10 +205,42 @@ describe('AuthService.login', () => {
     expect(sessionService.create).toHaveBeenCalledWith('migrated-1');
   });
 
+  it('R2 over an existing users row revokes the sessions opened with the previous password', async () => {
+    const user = makeUser({ passwordHash: 'other-hash' });
+    usersService.findByEmail.mockResolvedValue(user);
+    findLegacyByEmailMock.mockResolvedValue([makeLegacy()]);
+    passwordService.verify
+      .mockResolvedValueOnce({ valid: false, needsRehash: false })
+      .mockResolvedValueOnce({ valid: true, needsRehash: true });
+    legacyMigrationService.migrate.mockResolvedValue(user);
+
+    await service.login('joao@example.com', 'wp-secret');
+
+    expect(sessionService.revokeAll).toHaveBeenCalledWith(user.id);
+    expect(sessionService.revokeAll.mock.invocationCallOrder[0]).toBeLessThan(
+      sessionService.create.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('discards the new session when the password changed while this login was verifying it', async () => {
+    usersService.findByEmail.mockResolvedValue(makeUser());
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+    sessionService.revokedSince.mockResolvedValue(true);
+
+    await expect(
+      service.login('joao@example.com', 'old-secret'),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(sessionService.revoke).toHaveBeenCalledWith('sid-1');
+    expect(tokenService.sign).not.toHaveBeenCalled();
+  });
+
   it('R3: legacy migrated=true -> does NOT consult user_pass, 401 on wrong/legacy-only password', async () => {
     const legacy = makeLegacy({ migrated: true });
     usersService.findByEmail.mockResolvedValue(null);
-    prisma.wpUserLegacy.findFirst.mockResolvedValue(legacy);
+    findLegacyByEmailMock.mockResolvedValue([legacy]);
 
     await expect(
       service.login('joao@example.com', 'old-wp-password'),
@@ -204,7 +250,7 @@ describe('AuthService.login', () => {
     expect(legacyMigrationService.migrate).not.toHaveBeenCalled();
   });
 
-  it('R4: 401 Senha inválida when user exists but password is wrong', async () => {
+  it('R4: 401 generic error when user exists but password is wrong (bcrypt already spent the time)', async () => {
     const user = makeUser();
     usersService.findByEmail.mockResolvedValue(user);
     passwordService.verify.mockResolvedValue({
@@ -216,14 +262,15 @@ describe('AuthService.login', () => {
       service.login('joao@example.com', 'wrong'),
     ).rejects.toMatchObject({
       status: 401,
-      response: { error: 'Senha inválida' },
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).not.toHaveBeenCalled();
   });
 
-  it('R4: 401 Senha inválida when only legacy exists but password is wrong', async () => {
+  it('R4: 401 generic error when only legacy exists but password is wrong', async () => {
     const legacy = makeLegacy();
     usersService.findByEmail.mockResolvedValue(null);
-    prisma.wpUserLegacy.findFirst.mockResolvedValue(legacy);
+    findLegacyByEmailMock.mockResolvedValue([legacy]);
     passwordService.verify.mockResolvedValue({
       valid: false,
       needsRehash: false,
@@ -233,23 +280,33 @@ describe('AuthService.login', () => {
       service.login('joao@example.com', 'wrong'),
     ).rejects.toMatchObject({
       status: 401,
-      response: { error: 'Senha inválida' },
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).toHaveBeenCalledWith('wrong');
   });
 
-  it('R4: 404 Usuário não encontrado when neither user nor legacy exists', async () => {
+  it('R4: unknown e-mail gets the same 401 as a wrong password and spends a bcrypt', async () => {
     usersService.findByEmail.mockResolvedValue(null);
-    prisma.wpUserLegacy.findFirst.mockResolvedValue(null);
+    findLegacyByEmailMock.mockResolvedValue([]);
 
-    await expect(
-      service.login('ninguem@example.com', 'whatever'),
-    ).rejects.toThrow(NotFoundException);
     await expect(
       service.login('ninguem@example.com', 'whatever'),
     ).rejects.toMatchObject({
-      status: 404,
-      response: { error: 'Usuário não encontrado' },
+      status: 401,
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).toHaveBeenCalledWith('whatever');
+  });
+
+  it('rejects passwords over 256 chars before looking the e-mail up', async () => {
+    await expect(
+      service.login('joao@example.com', 'a'.repeat(257)),
+    ).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'E-mail ou senha inválidos.' },
+    });
+    expect(usersService.findByEmail).not.toHaveBeenCalled();
+    expect(passwordService.verify).not.toHaveBeenCalled();
   });
 });
 
@@ -361,7 +418,7 @@ describe('AuthService.register', () => {
   });
 
   it('teamOnly=true with session: creatorProfileId=actor, origin=admin_created, isTeamOnly=true, no cookies emitted', async () => {
-    const actor = makeClaims({ sub: 'actor-42' });
+    const actor = makeClaims({ sub: 'actor-42', role: 'abrigo' });
 
     const result = await service.register(
       { email: 'novo@b.com', password: 'secretpw', teamOnly: true },
@@ -383,6 +440,97 @@ describe('AuthService.register', () => {
     expect(result.rt).toBeUndefined();
     expect(sessionService.create).not.toHaveBeenCalled();
     expect(tokenService.sign).not.toHaveBeenCalled();
+  });
+
+  it.each(['admin', 'gerente', ' Admin '])(
+    '400 when self-registering with the privileged registerType %p',
+    async (registerType) => {
+      await expect(
+        service.register(
+          { email: 'x@y.com', password: 'secretpw', registerType },
+          null,
+        ),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { error: 'Tipo de cadastro inválido.' },
+      });
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['a voluntario', makeClaims({ role: 'voluntario' })],
+    ['an admin', makeClaims({ role: 'admin' })],
+    ['a team member', makeClaims({ role: 'abrigo', isTeamOnly: true })],
+    [
+      'a disabled team member',
+      makeClaims({ role: 'abrigo', teamDisabled: true }),
+    ],
+  ])('403 when %s tries to create a team access', async (_label, actor) => {
+    await expect(
+      service.register(
+        { email: 'novo@b.com', password: 'secretpw', teamOnly: true },
+        actor,
+      ),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { error: 'Sem permissão para criar acessos da equipe.' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('teamOnly ignores the requested registerType and always creates an abrigo access', async () => {
+    await service.register(
+      {
+        email: 'novo@b.com',
+        password: 'secretpw',
+        teamOnly: true,
+        registerType: 'voluntario',
+      },
+      makeClaims({ role: 'abrigo' }),
+    );
+
+    expect(prisma.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ role: 'abrigo' }) as unknown,
+    });
+  });
+
+  it('409 when the e-mail belongs to a WordPress legacy account', async () => {
+    findLegacyByEmailMock.mockResolvedValue([makeLegacy()]);
+
+    await expect(
+      service.register(
+        { email: 'joao@example.com', password: 'secretpw' },
+        null,
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      response: { error: 'E-mail já cadastrado.' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['%', 'nao-e-email', 'a@b', `${'a'.repeat(250)}@x.com`])(
+    '400 for the invalid e-mail %p',
+    async (email) => {
+      await expect(
+        service.register({ email, password: 'secretpw' }, null),
+      ).rejects.toMatchObject({
+        status: 400,
+        response: { error: 'E-mail inválido.' },
+      });
+      expect(prisma.user.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('400 when the password exceeds the 72 bytes bcrypt can use', async () => {
+    await expect(
+      service.register({ email: 'x@y.com', password: 'á'.repeat(37) }, null),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
   it('normal register (no teamOnly): origin=supabase_native, creatorProfileId=null, emits session', async () => {
@@ -706,10 +854,10 @@ function sha256(value: string): string {
 describe('AuthService.forgotPassword', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
   let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
-  let redisClient: { set: jest.Mock };
+  let redisClient: { set: jest.Mock; sadd: jest.Mock; multi: jest.Mock };
   let redisService: { client: unknown };
   let config: { get: jest.Mock };
-  let prisma: { wpUserLegacy: { findFirst: jest.Mock } };
+  let prisma: object;
   let service: AuthService;
 
   beforeEach(() => {
@@ -717,10 +865,22 @@ describe('AuthService.forgotPassword', () => {
     mailService = {
       sendPasswordReset: jest.fn().mockResolvedValue(undefined),
     };
-    redisClient = { set: jest.fn().mockResolvedValue('OK') };
+    redisClient = {
+      set: jest.fn(),
+      sadd: jest.fn(),
+      multi: jest.fn(() => {
+        const chain = {
+          set: (...args: unknown[]) => (redisClient.set(...args), chain),
+          sadd: (...args: unknown[]) => (redisClient.sadd(...args), chain),
+          expire: () => chain,
+          exec: () => Promise.resolve([]),
+        };
+        return chain;
+      }),
+    };
     redisService = { client: redisClient };
     config = { get: jest.fn().mockReturnValue('http://localhost:3000') };
-    prisma = { wpUserLegacy: { findFirst: jest.fn().mockResolvedValue(null) } };
+    prisma = {};
 
     service = new AuthService(
       usersService as unknown as UsersService,
@@ -792,19 +952,18 @@ describe('AuthService.forgotPassword', () => {
 
   it('legacy WordPress user without account: stores legacy:{id} and e-mails the legacy address', async () => {
     usersService.findByEmail.mockResolvedValue(null);
-    prisma.wpUserLegacy.findFirst.mockResolvedValue(
+    findLegacyByEmailMock.mockResolvedValue([
       makeLegacy({ id: 42n, userEmail: 'Joao@Example.com' }),
-    );
+    ]);
 
     const result = await service.forgotPassword('joao@example.com');
 
     expect(result).toEqual({ ok: true });
-    expect(prisma.wpUserLegacy.findFirst).toHaveBeenCalledWith({
-      where: {
-        userEmail: { equals: 'joao@example.com', mode: 'insensitive' },
-        migrated: false,
-      },
-    });
+    expect(findLegacyByEmailMock).toHaveBeenCalledWith(
+      prisma,
+      'joao@example.com',
+      { pendingOnly: true },
+    );
     const [key, value] = redisClient.set.mock.calls[0] as [string, string];
     expect(key).toMatch(/^pwdreset:[a-f0-9]{64}$/);
     expect(value).toBe('legacy:42');
@@ -812,6 +971,16 @@ describe('AuthService.forgotPassword', () => {
       'joao@example.com',
       expect.stringMatching(/\/redefinir-senha\?token=/),
     );
+  });
+
+  it('does not wait for the SMTP delivery (same response time with or without account)', async () => {
+    usersService.findByEmail.mockResolvedValue(makeUser());
+    mailService.sendPasswordReset.mockReturnValue(new Promise(() => {}));
+
+    await expect(service.forgotPassword('joao@example.com')).resolves.toEqual({
+      ok: true,
+    });
+    expect(mailService.sendPasswordReset).toHaveBeenCalledTimes(1);
   });
 
   it('always 200 even with an empty/blank e-mail', async () => {
@@ -829,7 +998,11 @@ describe('AuthService.resetPassword', () => {
     user: { update: jest.Mock };
     wpUserLegacy: { findUnique: jest.Mock };
   };
-  let redisClient: { get: jest.Mock; del: jest.Mock };
+  let redisClient: {
+    getdel: jest.Mock;
+    smembers: jest.Mock;
+    del: jest.Mock;
+  };
   let redisService: { client: unknown };
   let legacyMigrationService: { setPassword: jest.Mock; migrate: jest.Mock };
   let usersService: { findByEmail: jest.Mock };
@@ -843,7 +1016,8 @@ describe('AuthService.resetPassword', () => {
       wpUserLegacy: { findUnique: jest.fn() },
     };
     redisClient = {
-      get: jest.fn(),
+      getdel: jest.fn(),
+      smembers: jest.fn().mockResolvedValue(['other-token-hash']),
       del: jest.fn().mockResolvedValue(1),
     };
     redisService = { client: redisClient };
@@ -868,25 +1042,35 @@ describe('AuthService.resetPassword', () => {
 
   it('valid token: updates passwordHash, deletes the reset key, revokes all sessions, returns {ok:true}', async () => {
     const token = 'plaintext-token-abc';
-    redisClient.get.mockResolvedValue('user-1');
+    redisClient.getdel.mockResolvedValue('user-1');
 
     const result = await service.resetPassword(token, 'newpassword123');
 
     expect(result).toEqual({ ok: true });
-    expect(redisClient.get).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
     expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',
       'new-bcrypt-hash',
+      { claimLegacy: true },
     );
-    expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
+    // Os demais links pendentes do titular deixam de valer.
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:user-1',
+      'pwdreset:other-token-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
   });
 
   it('legacy token: migrates the WordPress user with the new password and links posts', async () => {
     const token = 'legacy-token';
     const legacy = makeLegacy({ id: 42n, migrated: false });
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(legacy);
     legacyMigrationService.migrate.mockResolvedValue(
       makeUser({ id: 'migrated-user' }),
@@ -904,12 +1088,20 @@ describe('AuthService.resetPassword', () => {
       null,
     );
     expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
-    expect(redisClient.del).toHaveBeenCalledWith(`pwdreset:${sha256(token)}`);
+    expect(redisClient.getdel).toHaveBeenCalledWith(
+      `pwdreset:${sha256(token)}`,
+    );
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:legacy:42',
+      'pwdreset_subject:migrated-user',
+      'pwdreset:other-token-hash',
+      'pwdreset:other-token-hash',
+    );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('migrated-user');
   });
 
   it('legacy token after the user already migrated by login: sets the password on that account', async () => {
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(
       makeLegacy({ id: 42n, migrated: true }),
     );
@@ -923,12 +1115,13 @@ describe('AuthService.resetPassword', () => {
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',
       'new-bcrypt-hash',
+      { claimLegacy: true },
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
   });
 
   it('400 when the legacy record behind the token no longer exists', async () => {
-    redisClient.get.mockResolvedValue('legacy:42');
+    redisClient.getdel.mockResolvedValue('legacy:42');
     prisma.wpUserLegacy.findUnique.mockResolvedValue(null);
 
     await expect(
@@ -940,8 +1133,18 @@ describe('AuthService.resetPassword', () => {
     expect(redisClient.del).not.toHaveBeenCalled();
   });
 
+  it('400 when the new password exceeds 72 bytes', async () => {
+    await expect(
+      service.resetPassword('some-token', 'a'.repeat(73)),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
+    });
+    expect(redisClient.getdel).not.toHaveBeenCalled();
+  });
+
   it('400 "Link inválido ou expirado" when token is absent/expired', async () => {
-    redisClient.get.mockResolvedValue(null);
+    redisClient.getdel.mockResolvedValue(null);
 
     await expect(
       service.resetPassword('missing-or-expired', 'newpassword123'),
@@ -953,14 +1156,14 @@ describe('AuthService.resetPassword', () => {
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
-  it('400 when password is shorter than 6 characters (after trim)', async () => {
+  it('400 when password is shorter than 8 characters (after trim)', async () => {
     await expect(
-      service.resetPassword('some-token', '  12345 '),
+      service.resetPassword('some-token', '  1234567 '),
     ).rejects.toMatchObject({
       status: 400,
-      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+      response: { error: 'A senha deve ter pelo menos 8 caracteres.' },
     });
-    expect(redisClient.get).not.toHaveBeenCalled();
+    expect(redisClient.getdel).not.toHaveBeenCalled();
   });
 });
 
@@ -969,6 +1172,7 @@ describe('AuthService.changePassword', () => {
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
   let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
   let legacyMigrationService: { setPassword: jest.Mock };
+  let redisClient: { smembers: jest.Mock; del: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
@@ -987,6 +1191,10 @@ describe('AuthService.changePassword', () => {
     legacyMigrationService = {
       setPassword: jest.fn().mockResolvedValue(undefined),
     };
+    redisClient = {
+      smembers: jest.fn().mockResolvedValue(['pending-hash']),
+      del: jest.fn().mockResolvedValue(1),
+    };
     service = new AuthService(
       {} as unknown as UsersService,
       passwordService as unknown as PasswordService,
@@ -994,7 +1202,7 @@ describe('AuthService.changePassword', () => {
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
-      {} as unknown as RedisService,
+      { client: redisClient } as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
     );
@@ -1029,7 +1237,7 @@ describe('AuthService.changePassword', () => {
     expect(sessionService.revokeAll).not.toHaveBeenCalled();
   });
 
-  it('400 when the new password is shorter than 6 characters (after trim)', async () => {
+  it('400 when the new password is shorter than 8 characters (after trim)', async () => {
     const claims = makeClaims({ sub: 'user-1', sid: 'sid-current' });
     prisma.user.findUnique.mockResolvedValue(
       makeUser({ id: 'user-1', passwordHash: 'old-hash' }),
@@ -1040,10 +1248,26 @@ describe('AuthService.changePassword', () => {
     });
 
     await expect(
-      service.changePassword(claims, 'current-ok', '  1234 '),
+      service.changePassword(claims, 'current-ok', '  1234567 '),
     ).rejects.toMatchObject({
       status: 400,
-      response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+      response: { error: 'A senha deve ter pelo menos 8 caracteres.' },
+    });
+    expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
+  });
+
+  it('400 when the new password exceeds 72 bytes', async () => {
+    prisma.user.findUnique.mockResolvedValue(makeUser({ id: 'user-1' }));
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.changePassword(makeClaims(), 'current-ok', 'a'.repeat(73)),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
     });
     expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
   });
@@ -1069,10 +1293,16 @@ describe('AuthService.changePassword', () => {
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',
       'new-bcrypt-hash',
+      { claimLegacy: false },
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith(
       'user-1',
       'sid-current',
+    );
+    // Um link de recuperação pendente não pode desfazer a troca de senha.
+    expect(redisClient.del).toHaveBeenCalledWith(
+      'pwdreset_subject:user-1',
+      'pwdreset:pending-hash',
     );
   });
 });

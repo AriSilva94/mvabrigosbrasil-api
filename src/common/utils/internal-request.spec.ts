@@ -1,5 +1,5 @@
 import type { Request } from 'express';
-import { isInternalRequest } from './internal-request';
+import { INTERNAL_TOKEN_HEADER, isInternalRequest } from './internal-request';
 
 function makeRequest(
   remoteAddress: string | undefined,
@@ -40,5 +40,27 @@ describe('isInternalRequest', () => {
 
   it('rejects a request without a socket address', () => {
     expect(isInternalRequest(makeRequest(undefined))).toBe(false);
+  });
+
+  describe('with INTERNAL_API_TOKEN configured', () => {
+    const token = 'internal-token-with-at-least-32-chars!';
+
+    it('accepts only the request carrying the shared secret', () => {
+      expect(
+        isInternalRequest(
+          makeRequest('172.18.0.5', { [INTERNAL_TOKEN_HEADER]: token }),
+          token,
+        ),
+      ).toBe(true);
+    });
+
+    it.each([
+      ['no header', {}],
+      ['a wrong secret', { [INTERNAL_TOKEN_HEADER]: 'wrong' }],
+    ])('rejects a private-network call with %s', (_label, headers) => {
+      expect(isInternalRequest(makeRequest('172.18.0.5', headers), token)).toBe(
+        false,
+      );
+    });
   });
 });

@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Logger, Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthController } from './auth.controller';
@@ -11,7 +12,11 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { getClientIp } from '../common/utils/client-ip';
 import { isInternalRequest } from '../common/utils/internal-request';
+import { RedisService } from '../redis/redis.service';
+import { RedisThrottlerStorage } from '../redis/redis-throttler.storage';
+import type { Env } from '../config/env.validation';
 import type { Request } from 'express';
 
 // Task 11: módulo agora "completo" — `JwtAuthGuard` e `RolesGuard` (Task 4)
@@ -21,14 +26,9 @@ import type { Request } from 'express';
 // assim uma rajada de tentativas é limitada mesmo antes de validar o
 // token/credenciais.
 //
-// Storage do throttler: em memória (padrão do pacote), NÃO Redis. Um
-// storage Redis dedicado para `@nestjs/throttler` v6 exigiria uma
-// dependência de terceiros (`nestjs-throttler-storage-redis`) cujo
-// `peerDependencies` só declara suporte a `@nestjs/core`/`common` até
-// `^10.0.0` (este projeto está em Nest 11) e que não recebe atualização
-// desde 08/2024 — arriscado e potencialmente incompatível. Ver ADR/relatório
-// da Task 11 para o acompanhamento: com múltiplas instâncias da API atrás
-// de um load balancer, o rate limit atual é por instância, não global.
+// Storage do throttler: Redis (`RedisThrottlerStorage`, implementação
+// própria — o pacote de terceiros não suporta Nest 11), para o limite valer
+// entre instâncias e sobreviver a deploys.
 //
 // `RedisModule` é `@Global()`, então `SessionService`/`RedisService`
 // continuam disponíveis sem import explícito aqui. `MailModule` (Task 10)
@@ -40,16 +40,35 @@ import type { Request } from 'express';
     JwtAuthModule,
     PrismaModule,
     MailModule,
-    ThrottlerModule.forRoot({
-      throttlers: [
-        {
-          name: 'default',
-          ttl: 60_000,
-          limit: 100,
-        },
-      ],
-      skipIf: (context) =>
-        isInternalRequest(context.switchToHttp().getRequest<Request>()),
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService, RedisService],
+      useFactory: (config: ConfigService<Env, true>, redis: RedisService) => {
+        const internalToken = config.get('INTERNAL_API_TOKEN', { infer: true });
+        if (
+          !internalToken &&
+          config.get('NODE_ENV', { infer: true }) === 'production'
+        ) {
+          new Logger(AuthModule.name).warn(
+            'INTERNAL_API_TOKEN ausente: qualquer chamada da rede privada sem cabeçalho de proxy fica fora do rate limit',
+          );
+        }
+        return {
+          throttlers: [
+            {
+              name: 'default',
+              ttl: 60_000,
+              limit: 100,
+            },
+          ],
+          storage: new RedisThrottlerStorage(redis),
+          getTracker: (req: Request) => getClientIp(req),
+          skipIf: (context) =>
+            isInternalRequest(
+              context.switchToHttp().getRequest<Request>(),
+              internalToken,
+            ),
+        };
+      },
     }),
   ],
   controllers: [AuthController],

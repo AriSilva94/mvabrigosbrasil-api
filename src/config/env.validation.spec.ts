@@ -35,6 +35,36 @@ describe('validateEnv', () => {
     );
   });
 
+  it('treats an empty INTERNAL_API_TOKEN as not configured', () => {
+    expect(
+      validateEnv({ ...base, INTERNAL_API_TOKEN: '' }).INTERNAL_API_TOKEN,
+    ).toBeUndefined();
+  });
+
+  it('rejects an INTERNAL_API_TOKEN shorter than 32 chars', () => {
+    expect(() => validateEnv({ ...base, INTERNAL_API_TOKEN: 'short' })).toThrow(
+      /INTERNAL_API_TOKEN/,
+    );
+  });
+
+  it('rejects COOKIE_SECURE=false in production behind https', () => {
+    expect(() =>
+      validateEnv({
+        ...base,
+        NODE_ENV: 'production',
+        APP_URL: 'https://mvabrigosbrasil.com.br',
+        COOKIE_SECURE: 'false',
+      }),
+    ).toThrow(/COOKIE_SECURE/);
+  });
+
+  it('accepts COOKIE_SECURE=false in production over plain http (local compose)', () => {
+    expect(
+      validateEnv({ ...base, NODE_ENV: 'production', COOKIE_SECURE: 'false' })
+        .COOKIE_SECURE,
+    ).toBe(false);
+  });
+
   it('rejects missing REDIS_URL', () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { REDIS_URL, ...rest } = base;

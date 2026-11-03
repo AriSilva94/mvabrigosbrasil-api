@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PasswordService } from './password/password.service';
 import { normalizeRegisterType } from '../common/utils/register-type';
+import { findLegacyByEmail } from './legacy/legacy-email';
 import { UserRole } from '../generated/prisma/enums';
 import type { Prisma, User, WpUserLegacy } from '../generated/prisma/client';
 
@@ -44,7 +45,9 @@ export class LegacyMigrationService {
         data: { migrated: true, migratedAt: new Date() },
       });
       if (claimed.count !== 1) {
-        throw new UnauthorizedException({ error: 'Senha inválida' });
+        throw new UnauthorizedException({
+          error: 'E-mail ou senha inválidos.',
+        });
       }
       const role =
         existingUser?.role ?? (await this.resolveRoleFromWp(tx, legacy.id));
@@ -72,16 +75,16 @@ export class LegacyMigrationService {
     });
   }
 
-  async setPassword(userId: string, passwordHash: string): Promise<void> {
+  async setPassword(
+    userId: string,
+    passwordHash: string,
+    options: { claimLegacy: boolean },
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.findUniqueOrThrow({ where: { id: userId } });
-      const pending = await tx.wpUserLegacy.findMany({
-        where: {
-          userEmail: { equals: user.email, mode: 'insensitive' },
-          migrated: false,
-        },
-        orderBy: { id: 'asc' },
-      });
+      const pending = options.claimLegacy
+        ? await findLegacyByEmail(tx, user.email, { pendingOnly: true })
+        : [];
 
       // Adquire os locks do legado antes do usuário, na mesma ordem usada
       // pelo login lazy. Os vínculos são concluídos junto com a senha nova.
