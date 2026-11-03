@@ -229,12 +229,18 @@ describe('Auth security regressions (E2E)', () => {
     beforeAll(() => createLegacyWithShelter(legacyId, legacyEmail));
 
     it.each(['%', 'e2e+sec-c2%', 'e2e+sec-c2_victim@test.local'])(
-      'login with %p does not match the legacy account -> 404',
+      'login with %p does not match the legacy account',
       async (email) => {
         await request(app.getHttpServer())
           .post('/api/v1/auth/login')
           .send({ email, password: 'x' })
-          .expect(404);
+          .expect(401);
+        // Sem curinga, nenhuma senha foi conferida contra o legado: se tivesse
+        // casado, a migração lazy teria tentado (e o legado seguiria igual).
+        expect(await legacyState(legacyId)).toEqual({
+          migrated: false,
+          profileId: null,
+        });
       },
     );
 
@@ -337,6 +343,113 @@ describe('Auth security regressions (E2E)', () => {
         .post('/api/v1/auth/refresh')
         .set('Cookie', squatter);
       expect(refresh.status).toBe(401);
+    });
+  });
+
+  describe('C4: revoked sessions lose their access token immediately', () => {
+    async function me(cookies: string[]) {
+      return request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Cookie', cookies);
+    }
+
+    it('logout -> the same mv_at (cookie or Bearer) gets 401', async () => {
+      const email = EMAIL('c4-logout');
+      await createUser(email);
+      const cookies = await login(email);
+      const at = cookies.find((c) => c.startsWith('mv_at='))!.slice(6);
+      expect((await me(cookies)).status).toBe(200);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/logout')
+        .set('Cookie', cookies)
+        .expect(200);
+
+      expect((await me(cookies)).status).toBe(401);
+      await request(app.getHttpServer())
+        .get('/api/v1/auth/me')
+        .set('Authorization', `Bearer ${at}`)
+        .expect(401);
+    });
+
+    it('change-password -> the other devices lose access, the current one keeps it', async () => {
+      const email = EMAIL('c4-change');
+      await createUser(email);
+      const other = await login(email);
+      const current = await login(email);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/change-password')
+        .set('Cookie', current)
+        .send({ currentPassword: PASSWORD, newPassword: 'Changed!2026' })
+        .expect(200);
+
+      expect((await me(other)).status).toBe(401);
+      expect((await me(current)).status).toBe(200);
+    });
+
+    it('a revoked session also cannot act as team creator on the public register route', async () => {
+      const email = EMAIL('c4-revoked-actor');
+      await createUser(email);
+      const cookies = await login(email);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/logout')
+        .set('Cookie', cookies)
+        .expect(200);
+      const teamEmail = EMAIL('c4-team-by-revoked');
+      emails.push(teamEmail);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .set(
+          'Cookie',
+          cookies.filter((c) => c.startsWith('mv_at=')),
+        )
+        .send({ email: teamEmail, password: PASSWORD, teamOnly: true })
+        .expect(401);
+    });
+  });
+
+  describe('C5: login does not reveal which e-mails have an account', () => {
+    it('unknown e-mail and wrong password get the same status and body', async () => {
+      const email = EMAIL('c5-existing');
+      await createUser(email);
+
+      const [unknown, wrong] = await Promise.all([
+        request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email: EMAIL('c5-unknown'), password: 'Wrong!2026' }),
+        request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'Wrong!2026' }),
+      ]);
+
+      expect(unknown.status).toBe(401);
+      expect(wrong.status).toBe(401);
+      expect(unknown.body).toEqual(wrong.body);
+    });
+  });
+
+  describe('C6: oversized passwords are rejected cheaply', () => {
+    it('login with a 100 KB password -> 401 without hashing it', async () => {
+      const started = Date.now();
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({
+          email: 'e2e_sec-c2xvictim@test.local',
+          password: 'a'.repeat(100_000),
+        })
+        .expect(401);
+      expect(Date.now() - started).toBeLessThan(300);
+    });
+
+    it('register with a password over 72 bytes -> 400', async () => {
+      const email = EMAIL('c6-long');
+      emails.push(email);
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send({ email, password: 'a'.repeat(73) })
+        .expect(400, { error: 'A senha deve ter no máximo 72 caracteres.' });
     });
   });
 });

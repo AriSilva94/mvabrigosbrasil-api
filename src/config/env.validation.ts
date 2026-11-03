@@ -25,6 +25,12 @@ export const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().optional(),
+  // Segredo compartilhado com o Next para isentar suas chamadas server-side
+  // do rate limit (ver `isInternalRequest`).
+  INTERNAL_API_TOKEN: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(32).optional(),
+  ),
 });
 
 export type Env = z.infer<typeof envSchema>;

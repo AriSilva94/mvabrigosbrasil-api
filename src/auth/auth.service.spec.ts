@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
@@ -59,7 +59,9 @@ describe('AuthService.login', () => {
   let usersService: jest.Mocked<
     Pick<UsersService, 'findByEmail' | 'resolveRole'>
   >;
-  let passwordService: jest.Mocked<Pick<PasswordService, 'verify' | 'hash'>>;
+  let passwordService: jest.Mocked<
+    Pick<PasswordService, 'verify' | 'hash' | 'burnVerification'>
+  >;
   let legacyMigrationService: jest.Mocked<
     Pick<LegacyMigrationService, 'migrate'>
   >;
@@ -78,6 +80,7 @@ describe('AuthService.login', () => {
     passwordService = {
       verify: jest.fn(),
       hash: jest.fn().mockResolvedValue('new-bcrypt-hash'),
+      burnVerification: jest.fn().mockResolvedValue(undefined),
     };
     legacyMigrationService = {
       migrate: jest.fn(),
@@ -228,7 +231,7 @@ describe('AuthService.login', () => {
     expect(legacyMigrationService.migrate).not.toHaveBeenCalled();
   });
 
-  it('R4: 401 Senha inválida when user exists but password is wrong', async () => {
+  it('R4: 401 generic error when user exists but password is wrong (bcrypt already spent the time)', async () => {
     const user = makeUser();
     usersService.findByEmail.mockResolvedValue(user);
     passwordService.verify.mockResolvedValue({
@@ -240,11 +243,12 @@ describe('AuthService.login', () => {
       service.login('joao@example.com', 'wrong'),
     ).rejects.toMatchObject({
       status: 401,
-      response: { error: 'Senha inválida' },
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).not.toHaveBeenCalled();
   });
 
-  it('R4: 401 Senha inválida when only legacy exists but password is wrong', async () => {
+  it('R4: 401 generic error when only legacy exists but password is wrong', async () => {
     const legacy = makeLegacy();
     usersService.findByEmail.mockResolvedValue(null);
     findLegacyByEmailMock.mockResolvedValue([legacy]);
@@ -257,23 +261,33 @@ describe('AuthService.login', () => {
       service.login('joao@example.com', 'wrong'),
     ).rejects.toMatchObject({
       status: 401,
-      response: { error: 'Senha inválida' },
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).toHaveBeenCalledWith('wrong');
   });
 
-  it('R4: 404 Usuário não encontrado when neither user nor legacy exists', async () => {
+  it('R4: unknown e-mail gets the same 401 as a wrong password and spends a bcrypt', async () => {
     usersService.findByEmail.mockResolvedValue(null);
     findLegacyByEmailMock.mockResolvedValue([]);
 
     await expect(
       service.login('ninguem@example.com', 'whatever'),
-    ).rejects.toThrow(NotFoundException);
-    await expect(
-      service.login('ninguem@example.com', 'whatever'),
     ).rejects.toMatchObject({
-      status: 404,
-      response: { error: 'Usuário não encontrado' },
+      status: 401,
+      response: { error: 'E-mail ou senha inválidos.' },
     });
+    expect(passwordService.burnVerification).toHaveBeenCalledWith('whatever');
+  });
+
+  it('rejects passwords over 256 chars before looking the e-mail up', async () => {
+    await expect(
+      service.login('joao@example.com', 'a'.repeat(257)),
+    ).rejects.toMatchObject({
+      status: 401,
+      response: { error: 'E-mail ou senha inválidos.' },
+    });
+    expect(usersService.findByEmail).not.toHaveBeenCalled();
+    expect(passwordService.verify).not.toHaveBeenCalled();
   });
 });
 
@@ -489,6 +503,16 @@ describe('AuthService.register', () => {
       expect(prisma.user.create).not.toHaveBeenCalled();
     },
   );
+
+  it('400 when the password exceeds the 72 bytes bcrypt can use', async () => {
+    await expect(
+      service.register({ email: 'x@y.com', password: 'á'.repeat(37) }, null),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
+    });
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
 
   it('normal register (no teamOnly): origin=supabase_native, creatorProfileId=null, emits session', async () => {
     const result = await service.register(
@@ -918,6 +942,16 @@ describe('AuthService.forgotPassword', () => {
     );
   });
 
+  it('does not wait for the SMTP delivery (same response time with or without account)', async () => {
+    usersService.findByEmail.mockResolvedValue(makeUser());
+    mailService.sendPasswordReset.mockReturnValue(new Promise(() => {}));
+
+    await expect(service.forgotPassword('joao@example.com')).resolves.toEqual({
+      ok: true,
+    });
+    expect(mailService.sendPasswordReset).toHaveBeenCalledTimes(1);
+  });
+
   it('always 200 even with an empty/blank e-mail', async () => {
     const result = await service.forgotPassword('   ');
 
@@ -1046,6 +1080,16 @@ describe('AuthService.resetPassword', () => {
     expect(redisClient.del).not.toHaveBeenCalled();
   });
 
+  it('400 when the new password exceeds 72 bytes', async () => {
+    await expect(
+      service.resetPassword('some-token', 'a'.repeat(73)),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
+    });
+    expect(redisClient.get).not.toHaveBeenCalled();
+  });
+
   it('400 "Link inválido ou expirado" when token is absent/expired', async () => {
     redisClient.get.mockResolvedValue(null);
 
@@ -1150,6 +1194,22 @@ describe('AuthService.changePassword', () => {
     ).rejects.toMatchObject({
       status: 400,
       response: { error: 'A senha deve ter no mínimo 6 caracteres.' },
+    });
+    expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
+  });
+
+  it('400 when the new password exceeds 72 bytes', async () => {
+    prisma.user.findUnique.mockResolvedValue(makeUser({ id: 'user-1' }));
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.changePassword(makeClaims(), 'current-ok', 'a'.repeat(73)),
+    ).rejects.toMatchObject({
+      status: 400,
+      response: { error: 'A senha deve ter no máximo 72 caracteres.' },
     });
     expect(legacyMigrationService.setPassword).not.toHaveBeenCalled();
   });

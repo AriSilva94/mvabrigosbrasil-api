@@ -8,6 +8,7 @@ import { TokenService } from './../src/auth/jwt/token.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { RedisService } from './../src/redis/redis.service';
 import cookieParser from 'cookie-parser';
+import { tokensWithSessions } from './helpers/active-session';
 
 // Task 11: guards globais (`JwtAuthGuard`/`RolesGuard`/`ThrottlerGuard`,
 // registrados via `APP_GUARD` em `AuthModule`) passam a valer para TODA a
@@ -49,7 +50,7 @@ describe('Global guards + throttling (e2e)', () => {
     app.useGlobalFilters(new HttpExceptionFilter());
     await app.init();
 
-    tokenService = app.get(TokenService);
+    tokenService = tokensWithSessions(app);
     redisService = app.get(RedisService);
   });
 
@@ -163,6 +164,9 @@ describe('Global guards + throttling (e2e)', () => {
 
   it('throttles POST /api/v1/auth/forgot-password after 3 requests/10min per IP (429)', async () => {
     const server = app.getHttpServer();
+    // O contador agora vive no Redis e sobreviveria entre execuções da suíte.
+    const throttleKeys = await redisService.client.keys('throttle:*');
+    if (throttleKeys.length > 0) await redisService.client.del(...throttleKeys);
     // Body sem `email` válido: `forgotPasswordSchema` falha o parse e o
     // controller trata como e-mail vazio, que sempre resolve `{ok:true}`
     // sem consultar o banco (evita depender do Prisma real/fake aqui — o

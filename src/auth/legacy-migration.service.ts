@@ -45,7 +45,9 @@ export class LegacyMigrationService {
         data: { migrated: true, migratedAt: new Date() },
       });
       if (claimed.count !== 1) {
-        throw new UnauthorizedException({ error: 'Senha inválida' });
+        throw new UnauthorizedException({
+          error: 'E-mail ou senha inválidos.',
+        });
       }
       const role =
         existingUser?.role ?? (await this.resolveRoleFromWp(tx, legacy.id));

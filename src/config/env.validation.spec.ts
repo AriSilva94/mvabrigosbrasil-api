@@ -35,6 +35,18 @@ describe('validateEnv', () => {
     );
   });
 
+  it('treats an empty INTERNAL_API_TOKEN as not configured', () => {
+    expect(
+      validateEnv({ ...base, INTERNAL_API_TOKEN: '' }).INTERNAL_API_TOKEN,
+    ).toBeUndefined();
+  });
+
+  it('rejects an INTERNAL_API_TOKEN shorter than 32 chars', () => {
+    expect(() => validateEnv({ ...base, INTERNAL_API_TOKEN: 'short' })).toThrow(
+      /INTERNAL_API_TOKEN/,
+    );
+  });
+
   it('rejects missing REDIS_URL', () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { REDIS_URL, ...rest } = base;

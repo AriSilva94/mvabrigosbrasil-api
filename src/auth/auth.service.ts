@@ -5,12 +5,14 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
-  NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { UsersService } from '../users/users.service';
-import { PasswordService } from './password/password.service';
+import {
+  MAX_VERIFIABLE_LENGTH,
+  PasswordService,
+} from './password/password.service';
 import { LegacyMigrationService } from './legacy-migration.service';
 import { SessionService } from '../redis/session.service';
 import { RedisService } from '../redis/redis.service';
@@ -35,7 +37,14 @@ function pwdResetKey(tokenHash: string): string {
 // Doc 03 §10: link válido por 60 minutos, uso único.
 const PWD_RESET_TTL_SECONDS = 60 * 60;
 const LEGACY_RESET_PREFIX = 'legacy:';
+// Mesma resposta para e-mail inexistente e senha errada: o login não pode
+// servir para descobrir quem tem conta.
+const INVALID_CREDENTIALS = 'E-mail ou senha inválidos.';
 const MIN_PASSWORD_LENGTH = 6;
+// O bcrypt ignora tudo depois do 72º byte: senhas maiores dariam a falsa
+// impressão de que o restante conta.
+const MAX_PASSWORD_BYTES = 72;
+const PASSWORD_TOO_LONG = 'A senha deve ter no máximo 72 caracteres.';
 // `admin` e `gerente` só são atribuídos pela administração, nunca por quem
 // se cadastra.
 const SELF_REGISTER_ROLES = new Set<UserRole>([
@@ -44,6 +53,12 @@ const SELF_REGISTER_ROLES = new Set<UserRole>([
 ]);
 const EMAIL_FORMAT = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_EMAIL_LENGTH = 254;
+
+function assertPasswordFitsBcrypt(password: string): void {
+  if (Buffer.byteLength(password, 'utf8') > MAX_PASSWORD_BYTES) {
+    throw new BadRequestException({ error: PASSWORD_TOO_LONG });
+  }
+}
 
 export type LoginResult = {
   userId: string;
@@ -97,8 +112,8 @@ export type PostLoginRedirectResult = {
 //      (`wp_users_legacy.migrated === false`).
 // R3 - legado já migrado nunca é consultado de novo (corrige o quirk do
 //      fluxo antigo que sobrescrevia senha nova com a senha WP antiga).
-// R4 - 401 se alguma das duas populações existe mas a senha não bateu,
-//      404 se nenhuma delas existe (paridade com o comportamento atual).
+// R4 - 401 genérico tanto para senha errada quanto para e-mail sem conta,
+//      com tempo de resposta equivalente (sem enumeração de contas).
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -124,6 +139,11 @@ export class AuthService {
         error: 'E-mail e senha são obrigatórios',
       });
     }
+    // Recusada antes de qualquer consulta: depois dela, conta existente e
+    // inexistente gastariam tempos diferentes.
+    if (normalizedPassword.length > MAX_VERIFIABLE_LENGTH) {
+      throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
+    }
 
     const user = await this.usersService.findByEmail(normalizedEmail);
     const [legacy = null] = await findLegacyByEmail(
@@ -148,7 +168,7 @@ export class AuthService {
             user.passwordHash,
           );
           if (!unchanged)
-            throw new UnauthorizedException({ error: 'Senha inválida' });
+            throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
         }
         authenticatedUser = user;
         migrated = true;
@@ -177,10 +197,12 @@ export class AuthService {
 
     // R4
     if (!authenticatedUser) {
-      if (user || legacy) {
-        throw new UnauthorizedException({ error: 'Senha inválida' });
+      // Só R1 com hash bcrypt gasta o tempo de um bcrypt; nos demais caminhos
+      // (sem conta, só legado, hash WordPress em `users`) ele é simulado.
+      if (!user?.passwordHash?.startsWith('$2')) {
+        await this.passwordService.burnVerification(normalizedPassword);
       }
-      throw new NotFoundException({ error: 'Usuário não encontrado' });
+      throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
     }
 
     const role = await this.usersService.resolveRole(authenticatedUser);
@@ -235,6 +257,7 @@ export class AuthService {
         error: 'A senha deve ter pelo menos 8 caracteres.',
       });
     }
+    assertPasswordFitsBcrypt(normalizedPassword);
 
     const requestedRole = normalizeRegisterType(dto.registerType);
     if (requestedRole && !SELF_REGISTER_ROLES.has(requestedRole)) {
@@ -458,7 +481,10 @@ export class AuthService {
       this.config.get('APP_URL', { infer: true }),
     );
     resetLink.searchParams.set('token', token);
-    await this.mailService.sendPasswordReset(email, resetLink.toString());
+    // Sem await: esperar o SMTP só quando a conta existe revelava, pelo tempo
+    // de resposta, quais e-mails estão cadastrados. Falhas de envio já são
+    // tratadas e logadas pelo MailService.
+    void this.mailService.sendPasswordReset(email, resetLink.toString());
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
@@ -472,6 +498,7 @@ export class AuthService {
         error: 'A senha deve ter no mínimo 6 caracteres.',
       });
     }
+    assertPasswordFitsBcrypt(normalizedPassword);
 
     const key = pwdResetKey(sha256(token ?? ''));
     const subject = await this.redisService.client.get(key);
@@ -564,6 +591,7 @@ export class AuthService {
         error: 'A senha deve ter no mínimo 6 caracteres.',
       });
     }
+    assertPasswordFitsBcrypt(normalizedNewPassword);
 
     const passwordHash = await this.passwordService.hash(normalizedNewPassword);
     // Saber a senha desta conta não prova posse do e-mail: o legado pendente

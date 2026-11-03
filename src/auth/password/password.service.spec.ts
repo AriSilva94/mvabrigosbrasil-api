@@ -15,6 +15,26 @@ describe('PasswordService', () => {
     });
   });
 
+  it('rejects passwords over 256 chars without hashing them (phpass is synchronous)', async () => {
+    const hash = generateWordpressHash('a'.repeat(257));
+    const started = Date.now();
+
+    expect(await service.verify('a'.repeat(257), hash)).toEqual({
+      valid: false,
+      needsRehash: false,
+    });
+    expect(Date.now() - started).toBeLessThan(5);
+  });
+
+  it('burnVerification spends a real bcrypt comparison', async () => {
+    const compare = jest.spyOn(bcrypt, 'compare');
+
+    await service.burnVerification('anything');
+
+    expect(compare).toHaveBeenCalledWith('anything', expect.any(String));
+    compare.mockRestore();
+  });
+
   it('rejects wrong password', async () => {
     const hash = await service.hash('right');
     expect(await service.verify('wrong', hash)).toEqual({

@@ -24,6 +24,10 @@ import {
   seedChatPeople,
   type ChatPeople,
 } from './helpers/chat-fixtures';
+import {
+  registerTestSession,
+  tokensWithSessions,
+} from './helpers/active-session';
 
 const claims = (sub: string): Claims => ({
   sub,
@@ -101,7 +105,7 @@ describe('Chat socket gateway (e2e)', () => {
     app.useWebSocketAdapter(adapter);
     await app.listen(0);
     url = await app.getUrl();
-    tokens = app.get(TokenService);
+    tokens = tokensWithSessions(app);
     jwt = app.get(JwtService);
     config = app.get(ConfigService);
     prisma = app.get(PrismaService);
@@ -148,7 +152,9 @@ describe('Chat socket gateway (e2e)', () => {
   });
 
   it('disconnects when the access token expires', async () => {
-    const shortLived = await jwt.signAsync(claims(randomUUID()), {
+    const shortLivedClaims = claims(randomUUID());
+    await registerTestSession(app, shortLivedClaims);
+    const shortLived = await jwt.signAsync(shortLivedClaims, {
       secret: config.getOrThrow<string>('AUTH_JWT_SECRET'),
       expiresIn: '1s',
       algorithm: 'HS256',

@@ -51,6 +51,7 @@ services:
       DATABASE_URL: postgresql://mv:mv@postgres:5432/mvabrigos?schema=public
       REDIS_URL: redis://:mv@redis:6379/0
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Defina AUTH_JWT_SECRET no arquivo local de ambiente}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       APP_URL: http://localhost:3000
       COOKIE_SECURE: "false"
       BCRYPT_COST: 10
@@ -84,6 +85,7 @@ services:
     environment:
       INTERNAL_API_URL: http://api:3001
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Defina AUTH_JWT_SECRET no arquivo local de ambiente}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       NEXT_PUBLIC_SITE_URL: http://localhost:3000
     depends_on:
       api:

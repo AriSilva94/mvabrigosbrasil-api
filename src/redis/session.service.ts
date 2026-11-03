@@ -79,6 +79,10 @@ export class SessionService {
     return { sid, rt };
   }
 
+  async isActive(sid: string): Promise<boolean> {
+    return (await this.redis.client.exists(sessionKey(sid))) === 1;
+  }
+
   async validate(sid: string, rt: string): Promise<{ userId: string } | null> {
     const raw = await this.redis.client.get(sessionKey(sid));
     if (!raw) {

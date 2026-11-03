@@ -53,12 +53,14 @@ Configurar no runtime do frontend:
 
 - INTERNAL_API_URL, coerente com o valor usado no build da mesma imagem.
 - AUTH_JWT_SECRET, igual ao backend do mesmo ambiente, para validar a sessão no servidor.
+- INTERNAL_API_TOKEN, igual ao backend do mesmo ambiente (gerar com `openssl rand -hex 32`).
 - NEXT_PUBLIC_SITE_URL, coerente com o domínio público.
 
 Configurar no runtime da API:
 
 - DATABASE_URL e REDIS_URL de serviços exclusivos daquele ambiente.
 - AUTH_JWT_SECRET, APP_URL e COOKIE_SECURE=true com HTTPS.
+- INTERNAL_API_TOKEN, o mesmo do frontend. Só as chamadas server-side do Next que enviam esse segredo ficam fora do rate limit; sem ele, a API registra um aviso e volta a isentar qualquer chamada da rede privada sem cabeçalho de proxy.
 - SMTP_HOST (smtp.hostinger.com), SMTP_PORT (465), SMTP_SECURE (true), SMTP_USER (caixa de e-mail completa), SMTP_PASS e MAIL_FROM quando o envio de e-mail estiver habilitado. Sem SMTP_HOST a API não envia e-mail e, em produção, só registra um aviso no log.
 
 APP_REVISION é incorporado pelo build; não sobrescrever no Dokploy. Os endpoints de health retornam Cache-Control: no-store. A API mantém as verificações reais de PostgreSQL e Redis.

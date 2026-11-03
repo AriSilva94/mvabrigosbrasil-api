@@ -5,10 +5,12 @@ import type { StringValue } from 'ms';
 import * as jwt from 'jsonwebtoken';
 import { TokenService, Claims } from './token.service';
 import { Env } from '../../config/env.validation';
+import { SessionService } from '../../redis/session.service';
 
 describe('TokenService', () => {
   let tokenService: TokenService;
   let jwtService: JwtService;
+  let isActive: jest.Mock;
 
   const mockEnv: Env = {
     NODE_ENV: 'test' as const,
@@ -24,6 +26,7 @@ describe('TokenService', () => {
   };
 
   beforeEach(async () => {
+    isActive = jest.fn().mockResolvedValue(true);
     const module: TestingModule = await Test.createTestingModule({
       imports: [
         JwtModule.register({
@@ -36,6 +39,7 @@ describe('TokenService', () => {
       ],
       providers: [
         TokenService,
+        { provide: SessionService, useValue: { isActive } },
         {
           provide: ConfigService,
           useValue: {
@@ -113,6 +117,38 @@ describe('TokenService', () => {
   });
 
   describe('verify', () => {
+    const activeClaims: Claims = {
+      sub: 'user-123',
+      email: 'user@example.com',
+      role: 'abrigo',
+      isTeamOnly: false,
+      teamDisabled: false,
+      creatorProfileId: null,
+      sid: 'session-789',
+    };
+
+    it('checks that the session behind the token still exists', async () => {
+      const token = await tokenService.sign(activeClaims);
+
+      await tokenService.verify(token);
+
+      expect(isActive).toHaveBeenCalledWith('session-789');
+    });
+
+    it('should return null when the session was revoked (logout, password change)', async () => {
+      isActive.mockResolvedValue(false);
+      const token = await tokenService.sign(activeClaims);
+
+      await expect(tokenService.verify(token)).resolves.toBeNull();
+    });
+
+    it('should return null when the session store is unavailable (fail closed)', async () => {
+      isActive.mockRejectedValue(new Error('redis down'));
+      const token = await tokenService.sign(activeClaims);
+
+      await expect(tokenService.verify(token)).resolves.toBeNull();
+    });
+
     it('should return claims when verifying own token', async () => {
       const claims: Claims = {
         sub: 'user-123',
