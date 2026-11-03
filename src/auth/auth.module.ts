@@ -12,6 +12,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { getClientIp } from '../common/utils/client-ip';
 import { isInternalRequest } from '../common/utils/internal-request';
 import { RedisService } from '../redis/redis.service';
 import { RedisThrottlerStorage } from '../redis/redis-throttler.storage';
@@ -60,6 +61,7 @@ import type { Request } from 'express';
             },
           ],
           storage: new RedisThrottlerStorage(redis),
+          getTracker: (req: Request) => getClientIp(req),
           skipIf: (context) =>
             isInternalRequest(
               context.switchToHttp().getRequest<Request>(),
