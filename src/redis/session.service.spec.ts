@@ -28,7 +28,8 @@ describe('SessionService', () => {
     const keys = await redis.client.keys('sess:*');
     const graceKeys = await redis.client.keys('sess_grace:*');
     const userSessKeys = await redis.client.keys('user_sess:*');
-    const all = [...keys, ...graceKeys, ...userSessKeys];
+    const revokedKeys = await redis.client.keys('user_revoked_at:*');
+    const all = [...keys, ...graceKeys, ...userSessKeys, ...revokedKeys];
     if (all.length > 0) {
       await redis.client.del(...all);
     }
@@ -285,6 +286,17 @@ describe('SessionService', () => {
     });
   });
 
+  describe('isActive', () => {
+    it('is true while the session exists and false after revoke', async () => {
+      const { sid } = await service.create('user-5');
+      expect(await service.isActive(sid)).toBe(true);
+
+      await service.revoke(sid);
+
+      expect(await service.isActive(sid)).toBe(false);
+    });
+  });
+
   describe('revokeAll', () => {
     it('deletes all sessions of a user', async () => {
       const a = await service.create('user-6');
@@ -307,6 +319,18 @@ describe('SessionService', () => {
       expect(await redis.client.get(`sess:${b.sid}`)).toBeNull();
       const members = await redis.client.smembers('user_sess:user-7');
       expect(members).toEqual([a.sid]);
+    });
+
+    it('records when it happened so in-flight logins can be discarded', async () => {
+      const before = Date.now() - 1;
+
+      await service.revokeAll('user-8');
+
+      expect(await service.revokedSince('user-8', before)).toBe(true);
+      expect(await service.revokedSince('user-8', Date.now() + 1)).toBe(false);
+      expect(await service.revokedSince('user-never-revoked', before)).toBe(
+        false,
+      );
     });
   });
 

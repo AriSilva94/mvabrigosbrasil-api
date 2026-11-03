@@ -12,6 +12,7 @@ import {
 import { parse } from 'cookie';
 import type { Server, Socket } from 'socket.io';
 import { TokenService, type Claims } from '../auth/jwt/token.service';
+import { SessionService } from '../redis/session.service';
 import type { Env } from '../config/env.validation';
 import { ChatAccessService } from './chat-access.service';
 import { PresenceService } from './presence.service';
@@ -44,6 +45,7 @@ export class ChatGateway
     private readonly presence: PresenceService,
     private readonly access: ChatAccessService,
     private readonly config: ConfigService<Env, true>,
+    private readonly sessions: SessionService,
   ) {}
 
   afterInit(server: Server): void {
@@ -113,7 +115,14 @@ export class ChatGateway
 
   @SubscribeMessage('chat:heartbeat')
   async heartbeat(@ConnectedSocket() socket: Socket): Promise<void> {
-    await this.presence.heartbeat((socket.data as SocketData).claims.sub);
+    const { claims } = socket.data as SocketData;
+    // Sem isto, um socket aberto sobrevivia ao logout ou à troca de senha até
+    // o access token expirar.
+    if (!(await this.sessions.isActive(claims.sid))) {
+      socket.disconnect(true);
+      return;
+    }
+    await this.presence.heartbeat(claims.sub);
   }
 
   private emitPresence(

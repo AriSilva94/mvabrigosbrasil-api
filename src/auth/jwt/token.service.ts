@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Env } from '../../config/env.validation';
+import { SessionService } from '../../redis/session.service';
 
 export type Claims = {
   sub: string;
@@ -20,6 +21,7 @@ export class TokenService {
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService<Env, true>,
+    private readonly sessions: SessionService,
   ) {}
 
   /**
@@ -39,8 +41,9 @@ export class TokenService {
 
   /**
    * Verify a JWT token and return the claims if valid.
-   * Returns null if the token is invalid, tampered, expired, or garbage.
-   * Never throws - always returns Claims or null.
+   * Returns null if the token is invalid, tampered, expired, garbage, or its
+   * session (`sid`) no longer exists. Never throws - always returns Claims
+   * or null.
    */
   async verify(token: string): Promise<Claims | null> {
     try {
@@ -49,6 +52,9 @@ export class TokenService {
         secret,
         algorithms: ['HS256'],
       });
+      // Sem esta checagem, logout, troca/redefinição de senha e desativação
+      // de equipe só valeriam quando o access token expirasse.
+      if (!(await this.sessions.isActive(decoded.sid))) return null;
       return decoded;
     } catch {
       return null;

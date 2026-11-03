@@ -126,6 +126,7 @@ describe('AuthService password reset (integration, real Redis)', () => {
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',
       'new-bcrypt-hash',
+      { claimLegacy: true },
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
 

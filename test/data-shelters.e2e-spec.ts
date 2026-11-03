@@ -15,6 +15,7 @@ import {
   restorePublicCache,
   snapshotPublicCache,
 } from './helpers/public-cache';
+import { tokensWithSessions } from './helpers/active-session';
 
 const NOOP_THROTTLER_STORAGE: ThrottlerStorage = {
   increment: () =>
@@ -172,7 +173,7 @@ describe('Data domains E2E - shelters (slice A)', () => {
 
     prisma = app.get(PrismaService);
     redis = app.get(RedisService);
-    tokenService = app.get(TokenService);
+    tokenService = tokensWithSessions(app);
     publicCacheSnapshot = await snapshotPublicCache(redis);
     await removeFixtures();
 

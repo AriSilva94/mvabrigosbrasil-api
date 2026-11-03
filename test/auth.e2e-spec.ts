@@ -714,7 +714,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
       .send({ email: EMAIL(8), password: CASE89_OLD_WP_PW })
       .expect(401);
 
-    expect(res.body).toEqual({ error: 'Senha inválida' });
+    expect(res.body).toEqual({ error: 'E-mail ou senha inválidos.' });
   });
 
   it('Case 9: legacy migrated=true, new password -> 200 via R1', async () => {
@@ -726,22 +726,24 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     expect(res.body).toEqual({ ok: true, migrated: true, postType: null });
   });
 
-  it('Case 10: e-mail in neither table -> 404 "Usuário não encontrado"', async () => {
+  // Cases 10 e 11 respondem igual de propósito: o login não revela se o
+  // e-mail tem conta (auditoria de segurança, fix/login-security).
+  it('Case 10: e-mail in neither table -> same 401 as a wrong password', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ email: EMAIL(10), password: 'whatever-not-registered' })
-      .expect(404);
+      .expect(401);
 
-    expect(res.body).toEqual({ error: 'Usuário não encontrado' });
+    expect(res.body).toEqual({ error: 'E-mail ou senha inválidos.' });
   });
 
-  it('Case 11: wrong password, user exists -> 401 "Senha inválida"', async () => {
+  it('Case 11: wrong password, user exists -> 401 generic error', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ email: EMAIL(11), password: 'totally-wrong-password' })
       .expect(401);
 
-    expect(res.body).toEqual({ error: 'Senha inválida' });
+    expect(res.body).toEqual({ error: 'E-mail ou senha inválidos.' });
   });
 
   it('Case 12: team-only disabled -> login OK, claims teamDisabled:true', async () => {
@@ -867,8 +869,11 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     });
   });
 
+  // `reset` prova posse do e-mail e assume o legado pendente. `change` só
+  // prova a senha da conta: o legado segue pendente até o dono dele entrar
+  // com a senha do WordPress (o que também assume os vínculos).
   it.each(['reset', 'change'] as const)(
-    '%s closes legacy fallback and keeps pending shelter/volunteer links',
+    '%s keeps pending shelter/volunteer links reachable only by the e-mail owner',
     async (operation) => {
       const caseNo = operation === 'reset' ? 17 : 18;
       const legacyId = BigInt(900000 + caseNo);
@@ -935,15 +940,34 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
             newPassword: 'NewPassword123',
           })
           .expect(200);
+
+        expect(
+          (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
+            ?.migrated,
+        ).toBe(false);
+        expect(
+          (
+            await prisma.shelter.findUnique({
+              where: { wpPostId: shelterPostId },
+            })
+          )?.profileId,
+        ).toBeNull();
       }
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ email, password: 'OldWordPress123' })
-        .expect(401);
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ email, password: 'NewPassword123' })
-        .expect(200);
+      if (operation === 'reset') {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'OldWordPress123' })
+          .expect(401);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'NewPassword123' })
+          .expect(200);
+      } else {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .send({ email, password: 'OldWordPress123' })
+          .expect(200);
+      }
       expect(
         (await prisma.wpUserLegacy.findUnique({ where: { id: legacyId } }))
           ?.migrated,

@@ -25,12 +25,34 @@ export const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().optional(),
+  // Segredo compartilhado com o Next para isentar suas chamadas server-side
+  // do rate limit (ver `isInternalRequest`).
+  INTERNAL_API_TOKEN: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().min(32).optional(),
+  ),
+});
+
+// Cookie de sessão sem Secure atrás de HTTPS viaja em texto claro em
+// qualquer requisição http (ex.: link antigo, downgrade de rede).
+const envWithInvariants = envSchema.superRefine((env, ctx) => {
+  if (
+    env.NODE_ENV === 'production' &&
+    env.APP_URL.startsWith('https:') &&
+    !env.COOKIE_SECURE
+  ) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['COOKIE_SECURE'],
+      message: 'must be true in production when APP_URL is https',
+    });
+  }
 });
 
 export type Env = z.infer<typeof envSchema>;
 
 export function validateEnv(config: Record<string, unknown>): Env {
-  const parsed = envSchema.safeParse(config);
+  const parsed = envWithInvariants.safeParse(config);
   if (!parsed.success) {
     const message = parsed.error.issues
       .map((i) => `${i.path.join('.')}: ${i.message}`)

@@ -8,6 +8,7 @@ import {
   USER_SESSIONS_KEY_PREFIX,
   refreshRotationGraceKey,
   sessionKey,
+  userRevokedAtKey,
   userSessionsKey,
 } from './session.keys';
 import { ROTATE_SESSION_SCRIPT } from './session-rotation.script';
@@ -41,6 +42,23 @@ export function parseDurationToSeconds(value: string): number {
   const [, amountStr, unit] = match;
   return Number(amountStr) * DURATION_UNIT_SECONDS[unit];
 }
+
+// Precisa durar só o suficiente para cobrir um login em andamento.
+const REVOKED_AT_TTL_SECONDS = 300;
+
+// Atômico: com SMEMBERS seguido de DEL, uma sessão criada entre os dois
+// passos sobrevivia à revogação.
+const REVOKE_ALL_SCRIPT = `
+local sids = redis.call('SMEMBERS', KEYS[1])
+for _, sid in ipairs(sids) do
+  if sid ~= ARGV[1] then
+    redis.call('DEL', ARGV[2] .. sid)
+    redis.call('SREM', KEYS[1], sid)
+  end
+end
+redis.call('SET', KEYS[2], ARGV[3], 'EX', ARGV[4])
+return #sids
+`;
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -77,6 +95,10 @@ export class SessionService {
       .exec();
 
     return { sid, rt };
+  }
+
+  async isActive(sid: string): Promise<boolean> {
+    return (await this.redis.client.exists(sessionKey(sid))) === 1;
   }
 
   async validate(sid: string, rt: string): Promise<{ userId: string } | null> {
@@ -151,17 +173,20 @@ export class SessionService {
   }
 
   async revokeAll(userId: string, exceptSid?: string): Promise<void> {
-    const sids = await this.redis.client.smembers(userSessionsKey(userId));
-    const toRevoke = sids.filter((sid) => sid !== exceptSid);
-    if (toRevoke.length === 0) {
-      return;
-    }
+    await this.redis.client.eval(
+      REVOKE_ALL_SCRIPT,
+      2,
+      userSessionsKey(userId),
+      userRevokedAtKey(userId),
+      exceptSid ?? '',
+      sessionKey(''),
+      Date.now(),
+      REVOKED_AT_TTL_SECONDS,
+    );
+  }
 
-    const multi = this.redis.client.multi();
-    for (const sid of toRevoke) {
-      multi.del(sessionKey(sid));
-      multi.srem(userSessionsKey(userId), sid);
-    }
-    await multi.exec();
+  async revokedSince(userId: string, since: number): Promise<boolean> {
+    const revokedAt = await this.redis.client.get(userRevokedAtKey(userId));
+    return revokedAt !== null && Number(revokedAt) > since;
   }
 }

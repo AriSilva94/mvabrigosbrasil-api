@@ -15,6 +15,7 @@ import {
   seedChatPeople,
   type ChatPeople,
 } from './helpers/chat-fixtures';
+import { tokensWithSessions } from './helpers/active-session';
 
 type InboxThread = {
   id: string;
@@ -73,7 +74,7 @@ describe('Chat REST (e2e)', () => {
     app.useGlobalFilters(new HttpExceptionFilter());
     await app.init();
     prisma = app.get(PrismaService);
-    tokens = app.get(TokenService);
+    tokens = tokensWithSessions(app);
   });
 
   afterAll(async () => {

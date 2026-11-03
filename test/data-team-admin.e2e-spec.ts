@@ -16,6 +16,7 @@ import {
   restorePublicCache,
   snapshotPublicCache,
 } from './helpers/public-cache';
+import { tokensWithSessions } from './helpers/active-session';
 
 type CookieJar = string[];
 
@@ -71,7 +72,7 @@ describe('Data domains E2E - team and admin (slice C)', () => {
 
     prisma = app.get(PrismaService);
     redis = app.get(RedisService);
-    tokens = app.get(TokenService);
+    tokens = tokensWithSessions(app);
 
     publicCacheSnapshot = await snapshotPublicCache(redis);
 
@@ -330,12 +331,13 @@ describe('Data domains E2E - team and admin (slice C)', () => {
     expect(
       await redis.client.sismember(`user_sess:${ids.teamMember}`, sid),
     ).toBe(0);
+    // A sessão revogada derruba o access token na hora (antes ele valia até
+    // expirar e só o TeamActiveGuard barrava, com 403).
     await request(app.getHttpServer())
       .post('/api/v1/vacancies')
       .set('Cookie', `mv_at=${accessToken}`)
       .send({})
-      .expect(403)
-      .expect({ error: 'Acesso negado' });
+      .expect(401);
     await request(app.getHttpServer())
       .post('/api/v1/auth/refresh')
       .set('Cookie', `mv_rt=${refreshCookie}`)
