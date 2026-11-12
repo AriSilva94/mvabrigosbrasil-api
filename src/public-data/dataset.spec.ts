@@ -131,6 +131,51 @@ describe('database dataset mapping', () => {
     expect(result.states).toEqual(['RS', 'SP']);
   });
 
+  it('links dynamics to shelters created without a WordPress post id', () => {
+    const result = buildDatabaseDataset(
+      [
+        {
+          id: 'shelter-native',
+          wpPostId: null,
+          name: 'Abrigo Nativo',
+          state: 'sp',
+          shelterType: 'mixed',
+          foundationDate: null,
+          createdAt: new Date('2026-11-12T12:00:00.000Z'),
+        },
+      ],
+      [
+        {
+          id: 'dynamic-native',
+          shelterId: 'shelter-native',
+          kind: 'abrigo',
+          dynamicType: 'dinamica',
+          referenceDate: new Date('2026-11-01T00:00:00.000Z'),
+          referencePeriod: '2026-11',
+          entradasDeAnimais: 1,
+          entradasDeGatos: 0,
+          adocoesCaes: 0,
+          adocoesGatos: 0,
+          devolucoesCaes: 0,
+          devolucoesGatos: 0,
+          eutanasiasCaes: 0,
+          eutanasiasGatos: 0,
+          mortesNaturaisCaes: 0,
+          mortesNaturaisGatos: 0,
+          retornoDeCaes: 0,
+          retornoDeGatos: 0,
+          retornoLocalCaes: 0,
+          retornoLocalGatos: 0,
+        },
+      ],
+    );
+
+    expect(result.movements[0]).toMatchObject({
+      shelterState: 'SP',
+      shelterType: 'Misto',
+    });
+  });
+
   it('keeps SQL date reference periods on their calendar month', () => {
     const result = buildDatabaseDataset(
       [],
