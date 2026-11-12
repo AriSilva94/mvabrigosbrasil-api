@@ -164,13 +164,10 @@ export function buildDatabaseDataset(
     };
   });
 
-  const shelterLookupByUuid = new Map<string, ShelterRecord>();
-  shelterRows.forEach((shelterRow) => {
-    const shelterRecord = shelters.find(
-      (shelter) => shelter.id === shelterRow.wpPostId,
-    );
-    if (shelterRecord) shelterLookupByUuid.set(shelterRow.id, shelterRecord);
-  });
+  // Abrigos cadastrados fora do WordPress não têm wpPostId, então o vínculo é pelo UUID.
+  const shelterLookupByUuid = new Map(
+    shelterRows.map((shelterRow, index) => [shelterRow.id, shelters[index]]),
+  );
 
   const movements: MovementRecord[] = dynamicsRows.map((dynamic) => {
     const shelter = shelterLookupByUuid.get(dynamic.shelterId);
