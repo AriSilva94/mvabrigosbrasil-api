@@ -12,9 +12,6 @@ import { RedisService } from './../src/redis/redis.service';
 import { HttpExceptionFilter } from './../src/common/filters/http-exception.filter';
 import { MailService } from './../src/mail/mail.service';
 
-// Regressões da auditoria do fluxo de login (branch fix/login-security).
-// Mesmas regras de `auth.e2e-spec.ts`: só e-mails sintéticos
-// `e2e+sec...@test.local`, ids legados >= 910000 e limpeza exata no afterAll.
 const NOOP_THROTTLER_STORAGE: ThrottlerStorage = {
   increment: () =>
     Promise.resolve({
@@ -41,8 +38,6 @@ describe('Auth security regressions (E2E)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   let redis: RedisService;
-  // Recriado a cada teste: um teste que falha antes de restaurar o spy não
-  // pode vazar um link de redefinição (de uma conta real) para o seguinte.
   let sendPasswordReset: jest.SpyInstance;
 
   const legacyIds: bigint[] = [];
@@ -235,8 +230,6 @@ describe('Auth security regressions (E2E)', () => {
           .post('/api/v1/auth/login')
           .send({ email, password: 'x' })
           .expect(401);
-        // Sem curinga, nenhuma senha foi conferida contra o legado: se tivesse
-        // casado, a migração lazy teria tentado (e o legado seguiria igual).
         expect(await legacyState(legacyId)).toEqual({
           migrated: false,
           profileId: null,
@@ -539,6 +532,7 @@ describe('Auth security regressions (E2E)', () => {
           email: member,
           passwordHash: await bcrypt.hash(PASSWORD, 4),
           role: 'abrigo',
+          emailVerified: true,
           isTeamOnly: true,
           teamDisabled: true,
           creatorProfileId: ownerRow.id,

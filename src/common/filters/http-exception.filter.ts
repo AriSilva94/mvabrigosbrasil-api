@@ -30,9 +30,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
         typeof payload.error === 'string' &&
         !('statusCode' in payload)
       ) {
-        const body: { error: string; details?: unknown } = {
+        const body: { error: string; code?: string; details?: unknown } = {
           error: payload.error,
         };
+        if ('code' in payload && typeof payload.code === 'string') {
+          body.code = payload.code;
+        }
         if ('details' in payload) {
           body.details = (payload as { details?: unknown }).details;
         }

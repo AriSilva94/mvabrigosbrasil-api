@@ -19,22 +19,25 @@ export const envSchema = z.object({
   COOKIE_SECURE: bool.default(false),
   APP_URL: z.string().url(),
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(10),
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().int().positive().optional(),
-  SMTP_SECURE: bool.optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
+  RESEND_API_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().optional(),
+  ),
+  RESEND_WEBHOOK_SECRET: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().optional(),
+  ),
   MAIL_FROM: z.string().optional(),
-  // Segredo compartilhado com o Next para isentar suas chamadas server-side
-  // do rate limit (ver `isInternalRequest`).
+  MAIL_DAILY_LIMIT: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().int().positive().optional(),
+  ),
   INTERNAL_API_TOKEN: z.preprocess(
     (v) => (v === '' ? undefined : v),
     z.string().min(32).optional(),
   ),
 });
 
-// Cookie de sessão sem Secure atrás de HTTPS viaja em texto claro em
-// qualquer requisição http (ex.: link antigo, downgrade de rede).
 const envWithInvariants = envSchema.superRefine((env, ctx) => {
   if (
     env.NODE_ENV === 'production' &&

@@ -4,10 +4,6 @@ import {
   type AuthUserRow,
 } from './users';
 
-/**
- * All rows below are SYNTHETIC — shaped like real `auth.users` LEFT JOIN
- * `public.profiles` rows, but no real user data.
- */
 function baseRow(overrides: Partial<AuthUserRow> = {}): AuthUserRow {
   return {
     id: '11111111-1111-1111-1111-111111111111',
@@ -119,16 +115,8 @@ describe('mapAuthUserToUser', () => {
     expect(mapAuthUserToUser(row).passwordHash).toBe(literalHash);
   });
 
-  it('unconfirmed email: emailVerified is false', () => {
+  it('imported accounts are verified even when Supabase never confirmed the e-mail', () => {
     const row = baseRow({ email_confirmed_at: null });
-
-    expect(mapAuthUserToUser(row).emailVerified).toBe(false);
-  });
-
-  it('confirmed email: emailVerified is true', () => {
-    const row = baseRow({
-      email_confirmed_at: new Date('2024-01-01T00:00:00Z'),
-    });
 
     expect(mapAuthUserToUser(row).emailVerified).toBe(true);
   });

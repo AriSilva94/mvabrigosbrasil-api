@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import type { EmailVerificationService } from './email-verification.service';
 import { RedisService } from '../redis/redis.service';
 import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
@@ -13,12 +14,6 @@ import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import type { User } from '../generated/prisma/client';
 
-// Integration test against a REAL Redis (same instance/pattern used by
-// `src/redis/session.service.spec.ts`: db 15 so it never collides with
-// dev data on db 0). Proves the actual Redis round-trip for the
-// `pwdreset:{sha256(token)}` key: TTL is set, a successful reset consumes
-// it (single-use — reusing the same token afterwards is rejected), and an
-// absent/expired key is rejected too (task-10 brief case 14).
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -48,7 +43,10 @@ describe('AuthService password reset (integration, real Redis)', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
   let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
-  let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
+  let mailService: jest.Mocked<
+    Pick<MailService, 'sendPasswordReset' | 'sendPasswordChanged'>
+  >;
+  let prisma: { user: { findUnique: jest.Mock } };
   let legacyMigrationService: { setPassword: jest.Mock };
   let config: { get: jest.Mock };
   let service: AuthService;
@@ -76,7 +74,15 @@ describe('AuthService password reset (integration, real Redis)', () => {
     usersService = { findByEmail: jest.fn() };
     passwordService = { hash: jest.fn().mockResolvedValue('new-bcrypt-hash') };
     sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
-    mailService = { sendPasswordReset: jest.fn().mockResolvedValue(undefined) };
+    mailService = {
+      sendPasswordReset: jest.fn().mockResolvedValue(undefined),
+      sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
+    };
+    prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ email: 'joao@example.com' }),
+      },
+    };
     legacyMigrationService = {
       setPassword: jest.fn().mockResolvedValue(undefined),
     };
@@ -88,10 +94,11 @@ describe('AuthService password reset (integration, real Redis)', () => {
       legacyMigrationService as unknown as LegacyMigrationService,
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
-      {} as unknown as PrismaService,
+      prisma as unknown as PrismaService,
       redis,
       mailService as unknown as MailService,
       config as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -129,11 +136,13 @@ describe('AuthService password reset (integration, real Redis)', () => {
       { claimLegacy: true },
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
+    expect(mailService.sendPasswordChanged).toHaveBeenCalledWith(
+      'joao@example.com',
+    );
 
     const key = `pwdreset:${sha256(token)}`;
     expect(await redis.client.get(key)).toBeNull();
 
-    // Reusing the same (now-consumed) token must be rejected.
     await expect(
       service.resetPassword(token, 'anotherpassword123'),
     ).rejects.toMatchObject({
@@ -151,7 +160,6 @@ describe('AuthService password reset (integration, real Redis)', () => {
     const token = new URL(link).searchParams.get('token') as string;
     const key = `pwdreset:${sha256(token)}`;
 
-    // Simulate expiry directly instead of waiting out the real 60min TTL.
     await redis.client.del(key);
 
     await expect(
