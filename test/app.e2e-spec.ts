@@ -23,10 +23,13 @@ class FakePrismaService {
   }
 }
 
+const INTERNAL_API_TOKEN = 'e2e-internal-token-e2e-internal-token-00';
+
 describe('AppModule (e2e)', () => {
   let app: INestApplication<App>;
 
   beforeEach(async () => {
+    process.env.INTERNAL_API_TOKEN = INTERNAL_API_TOKEN;
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -39,9 +42,19 @@ describe('AppModule (e2e)', () => {
     await app.init();
   });
 
-  it('/api/v1/health (GET) reports status, db and redis', async () => {
+  it('/api/v1/health (GET) reports only the status to anonymous callers', async () => {
     const res = await request(app.getHttpServer())
       .get('/api/v1/health')
+      .expect(200);
+    expect(res.body).toHaveProperty('status');
+    expect(res.body).not.toHaveProperty('db');
+    expect(res.body).not.toHaveProperty('redis');
+  });
+
+  it('/api/v1/health (GET) reports status, db and redis with the internal token', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/health')
+      .set('x-internal-api-token', INTERNAL_API_TOKEN)
       .expect(200);
     expect(res.body).toHaveProperty('status');
     expect(res.body).toHaveProperty('db');

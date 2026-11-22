@@ -14,7 +14,7 @@ const PROXY_HEADERS = ['x-forwarded-for', 'forwarded', 'x-real-ip'];
 
 export const INTERNAL_TOKEN_HEADER = 'x-internal-api-token';
 
-function sameSecret(provided: string, expected: string): boolean {
+export function sameSecret(provided: string, expected: string): boolean {
   // Hash antes de comparar: timingSafeEqual exige tamanhos iguais e o
   // tamanho do segredo também não deve vazar.
   const digest = (value: string) => createHash('sha256').update(value).digest();
