@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LegacyMigrationService } from './legacy-migration.service';
+import { EmailVerificationService } from './email-verification.service';
 import { JwtAuthModule } from './jwt/jwt.module';
 import { PasswordModule } from './password/password.module';
 import { UsersModule } from '../users/users.module';
@@ -19,20 +20,6 @@ import { RedisThrottlerStorage } from '../redis/redis-throttler.storage';
 import type { Env } from '../config/env.validation';
 import type { Request } from 'express';
 
-// Task 11: módulo agora "completo" — `JwtAuthGuard` e `RolesGuard` (Task 4)
-// são registrados como `APP_GUARD` globais, então TODA rota da API exige
-// uma sessão válida a menos que marcada `@Public()`. `ThrottlerGuard`
-// (`@nestjs/throttler`) também é global, e roda ANTES dos guards de auth —
-// assim uma rajada de tentativas é limitada mesmo antes de validar o
-// token/credenciais.
-//
-// Storage do throttler: Redis (`RedisThrottlerStorage`, implementação
-// própria — o pacote de terceiros não suporta Nest 11), para o limite valer
-// entre instâncias e sobreviver a deploys.
-//
-// `RedisModule` é `@Global()`, então `SessionService`/`RedisService`
-// continuam disponíveis sem import explícito aqui. `MailModule` (Task 10)
-// expõe `MailService`, usado por `forgotPassword`.
 @Module({
   imports: [
     UsersModule,
@@ -75,8 +62,7 @@ import type { Request } from 'express';
   providers: [
     AuthService,
     LegacyMigrationService,
-    // Ordem importa: throttling primeiro (rejeita rajadas antes de gastar
-    // trabalho de auth), depois autenticação, depois autorização por role.
+    EmailVerificationService,
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },

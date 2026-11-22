@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpException,
   InternalServerErrorException,
   Logger,
@@ -37,6 +38,19 @@ describe('HttpExceptionFilter', () => {
         }),
       ).body,
     ).toEqual({ error: 'invalid_payload', details: { a: 1 } });
+  });
+  it('keeps a string code next to the error message', () => {
+    expect(
+      run(
+        new ForbiddenException({
+          error: 'E-mail não verificado.',
+          code: 'EMAIL_NOT_VERIFIED',
+        }),
+      ).body,
+    ).toEqual({
+      error: 'E-mail não verificado.',
+      code: 'EMAIL_NOT_VERIFIED',
+    });
   });
   it('hides unknown errors', () => {
     expect(run(new Error('boom'))).toEqual({
