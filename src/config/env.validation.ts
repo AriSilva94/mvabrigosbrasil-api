@@ -19,12 +19,21 @@ export const envSchema = z.object({
   COOKIE_SECURE: bool.default(false),
   APP_URL: z.string().url(),
   BCRYPT_COST: z.coerce.number().int().min(4).max(15).default(10),
-  SMTP_HOST: z.string().optional(),
-  SMTP_PORT: z.coerce.number().int().positive().optional(),
-  SMTP_SECURE: bool.optional(),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
+  RESEND_API_KEY: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().optional(),
+  ),
+  RESEND_WEBHOOK_SECRET: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.string().optional(),
+  ),
   MAIL_FROM: z.string().optional(),
+  // Teto diário de e-mails deste ambiente. O plano free do Resend dá 100/dia
+  // para a conta toda, então dev e produção devem somar no máximo isso.
+  MAIL_DAILY_LIMIT: z.preprocess(
+    (v) => (v === '' ? undefined : v),
+    z.coerce.number().int().positive().optional(),
+  ),
   // Segredo compartilhado com o Next para isentar suas chamadas server-side
   // do rate limit (ver `isInternalRequest`).
   INTERNAL_API_TOKEN: z.preprocess(

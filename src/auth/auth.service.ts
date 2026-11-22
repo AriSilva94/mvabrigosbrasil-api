@@ -17,6 +17,7 @@ import { LegacyMigrationService } from './legacy-migration.service';
 import { SessionService } from '../redis/session.service';
 import { RedisService } from '../redis/redis.service';
 import { MailService } from '../mail/mail.service';
+import { EmailVerificationService } from './email-verification.service';
 import { TokenService, Claims } from './jwt/token.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeRegisterType } from '../common/utils/register-type';
@@ -46,6 +47,7 @@ const LEGACY_RESET_PREFIX = 'legacy:';
 // Mesma resposta para e-mail inexistente e senha errada: o login não pode
 // servir para descobrir quem tem conta.
 const INVALID_CREDENTIALS = 'E-mail ou senha inválidos.';
+const EMAIL_NOT_VERIFIED = 'E-mail não verificado.';
 const MIN_PASSWORD_LENGTH = 8;
 const PASSWORD_TOO_SHORT = 'A senha deve ter pelo menos 8 caracteres.';
 // O bcrypt ignora tudo depois do 72º byte: senhas maiores dariam a falsa
@@ -79,6 +81,9 @@ export type LoginResult = {
 export type RegisterResult = {
   userId: string;
   teamOnly: boolean;
+  // Cadastro normal não abre sessão: o login só é liberado depois de
+  // confirmar o e-mail.
+  verificationRequired: boolean;
   // Presentes apenas quando `teamOnly === false` (uma sessão é emitida para
   // o usuário recém-criado, igual ao fluxo de login). Quando `teamOnly ===
   // true`, quem fica logado é o criador (actor), então nenhuma sessão nova
@@ -135,6 +140,7 @@ export class AuthService {
     private readonly redisService: RedisService,
     private readonly mailService: MailService,
     private readonly config: ConfigService<Env, true>,
+    private readonly emailVerificationService: EmailVerificationService,
   ) {}
 
   async login(email: string, password: string): Promise<LoginResult> {
@@ -215,6 +221,15 @@ export class AuthService {
         await this.passwordService.burnVerification(normalizedPassword);
       }
       throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
+    }
+
+    // Só depois de a senha conferir: antes disso, o 403 revelaria que o
+    // e-mail tem conta.
+    if (!authenticatedUser.emailVerified) {
+      throw new ForbiddenException({
+        error: EMAIL_NOT_VERIFIED,
+        code: 'EMAIL_NOT_VERIFIED',
+      });
     }
 
     const role = await this.usersService.resolveRole(authenticatedUser);
@@ -321,7 +336,9 @@ export class AuthService {
       data: {
         email: normalizedEmail,
         passwordHash,
-        emailVerified: true,
+        // Acesso de equipe é criado por um titular logado; o cadastro normal
+        // precisa confirmar o e-mail.
+        emailVerified: teamOnly,
         role,
         origin: teamOnly
           ? UserOrigin.admin_created
@@ -334,22 +351,20 @@ export class AuthService {
     // teamOnly: o criador (actor) segue logado como ele mesmo — nenhuma
     // sessão nova é emitida para o usuário de equipe recém-criado.
     if (teamOnly) {
-      return { userId: created.id, teamOnly: true };
+      return {
+        userId: created.id,
+        teamOnly: true,
+        verificationRequired: false,
+      };
     }
 
-    const { sid, rt } = await this.sessionService.create(created.id);
-    const claims: Claims = {
-      sub: created.id,
-      email: normalizedEmail,
-      role,
-      isTeamOnly: false,
-      teamDisabled: false,
-      creatorProfileId: null,
-      sid,
-    };
-    const at = await this.tokenService.sign(claims);
+    await this.emailVerificationService.issue(created.id, normalizedEmail);
 
-    return { userId: created.id, teamOnly: false, at, rt, sid };
+    return {
+      userId: created.id,
+      teamOnly: false,
+      verificationRequired: true,
+    };
   }
 
   async me(claims: Claims | null): Promise<MeResult> {
@@ -501,10 +516,30 @@ export class AuthService {
       this.config.get('APP_URL', { infer: true }),
     );
     resetLink.searchParams.set('token', token);
-    // Sem await: esperar o SMTP só quando a conta existe revelava, pelo tempo
+    // Sem await: esperar o envio só quando a conta existe revelava, pelo tempo
     // de resposta, quais e-mails estão cadastrados. Falhas de envio já são
     // tratadas e logadas pelo MailService.
     void this.mailService.sendPasswordReset(email, resetLink.toString());
+  }
+
+  async verifyEmail(token: string, password: string): Promise<{ ok: true }> {
+    const result = await this.emailVerificationService.confirm(token, password);
+    if (result === 'wrong_password') {
+      throw new BadRequestException({
+        error: 'Senha incorreta.',
+        code: 'INVALID_PASSWORD',
+      });
+    }
+    if (result === 'invalid') {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+    return { ok: true };
+  }
+
+  // Sempre { ok: true }: não revela se o e-mail tem conta.
+  async resendVerification(email: string): Promise<{ ok: true }> {
+    await this.emailVerificationService.resend(email);
+    return { ok: true };
   }
 
   // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
@@ -537,8 +572,25 @@ export class AuthService {
 
     await this.invalidateResetTokens(subject, userId);
     await this.sessionService.revokeAll(userId);
+    await this.notifyPasswordChanged(userId);
 
     return { ok: true };
+  }
+
+  // A senha já foi trocada: nada aqui pode fazer o pedido falhar.
+  private async notifyPasswordChanged(userId: string): Promise<void> {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (user) void this.mailService.sendPasswordChanged(user.email);
+    } catch (err) {
+      this.logger.error(
+        `Falha ao avisar troca de senha do usuário ${userId}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+    }
   }
 
   private async invalidateResetTokens(...subjects: string[]): Promise<void> {
@@ -633,6 +685,7 @@ export class AuthService {
     );
     await this.invalidateResetTokens(claims.sub);
     await this.sessionService.revokeAll(claims.sub, claims.sid);
+    void this.mailService.sendPasswordChanged((user as User).email);
 
     return { ok: true };
   }

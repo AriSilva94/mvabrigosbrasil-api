@@ -18,6 +18,8 @@ import { loginSchema } from './dto/login.dto';
 import { registerSchema } from './dto/register.dto';
 import { forgotPasswordSchema } from './dto/forgot.dto';
 import { resetPasswordSchema } from './dto/reset.dto';
+import { verifyEmailSchema } from './dto/verify-email.dto';
+import { resendVerificationSchema } from './dto/resend-verification.dto';
 import { changePasswordSchema } from './dto/change.dto';
 import { setAuthCookies, clearAuthCookies } from './cookies/cookies';
 import { Public } from './decorators/public';
@@ -25,7 +27,11 @@ import { TokenService, Claims } from './jwt/token.service';
 import type { Env } from '../config/env.validation';
 
 type LoginResponse = { ok: true; migrated: boolean; postType: string | null };
-type RegisterResponse = { ok: true; userId: string };
+type RegisterResponse = {
+  ok: true;
+  userId: string;
+  verificationRequired: boolean;
+};
 type OkResponse = { ok: true };
 
 @Controller('auth')
@@ -81,7 +87,6 @@ export class AuthController {
   async register(
     @Body() body: unknown,
     @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
   ): Promise<RegisterResponse> {
     const parsed = registerSchema.safeParse(body);
     if (!parsed.success) {
@@ -93,18 +98,11 @@ export class AuthController {
     const actor = await this.currentClaims(req);
     const result = await this.authService.register(parsed.data, actor);
 
-    // Só emite sessão (cookies) para o registro normal (`!teamOnly`). Quando
-    // `teamOnly === true`, o criador (actor) permanece logado como ele
-    // mesmo — nenhuma sessão nova é aberta para o usuário de equipe.
-    if (!result.teamOnly) {
-      setAuthCookies(
-        res,
-        { at: result.at as string, rt: `${result.sid}.${result.rt}` },
-        this.config,
-      );
-    }
-
-    return { ok: true, userId: result.userId };
+    return {
+      ok: true,
+      userId: result.userId,
+      verificationRequired: result.verificationRequired,
+    };
   }
 
   // NÃO marcado `@Public()`: exige sessão — `JwtAuthGuard` (global desde a
@@ -191,6 +189,31 @@ export class AuthController {
     const parsed = forgotPasswordSchema.safeParse(body);
     const email = parsed.success ? parsed.data.email : '';
     return this.authService.forgotPassword(email);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('verify-email')
+  @HttpCode(200)
+  async verifyEmail(@Body() body: unknown): Promise<OkResponse> {
+    const parsed = verifyEmailSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException({ error: 'Link inválido ou expirado' });
+    }
+    return this.authService.verifyEmail(
+      parsed.data.token,
+      parsed.data.password,
+    );
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 3, ttl: 600_000 } })
+  @Post('resend-verification')
+  @HttpCode(200)
+  async resendVerification(@Body() body: unknown): Promise<OkResponse> {
+    const parsed = resendVerificationSchema.safeParse(body);
+    const email = parsed.success ? parsed.data.email : '';
+    return this.authService.resendVerification(email);
   }
 
   // Doc 03 §10 / doc 05 §3.1.

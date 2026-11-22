@@ -152,13 +152,11 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
     jest.clearAllMocks();
   });
 
-  it('register: sets cookies on non-team registration', async () => {
+  it('register: normal registration opens no session and asks for e-mail verification', async () => {
     authService.register.mockResolvedValue({
       userId: 'new-user-1',
       teamOnly: false,
-      at: 'signed-jwt',
-      rt: 'opaque-rt',
-      sid: 'session-id-1',
+      verificationRequired: true,
     });
 
     const res = await request(
@@ -168,13 +166,12 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
       .send({ email: 'joao@example.com', password: 'secretpw' })
       .expect(200);
 
-    expect(res.body).toEqual({ ok: true, userId: 'new-user-1' });
-
-    const cookies = res.headers['set-cookie'] as unknown as string[];
-    const atCookie = cookies.find((c) => c.startsWith('mv_at='));
-    const rtCookie = cookies.find((c) => c.startsWith('mv_rt='));
-    expect(atCookie).toContain('signed-jwt');
-    expect(rtCookie).toContain('session-id-1.opaque-rt');
+    expect(res.body).toEqual({
+      ok: true,
+      userId: 'new-user-1',
+      verificationRequired: true,
+    });
+    expect(res.headers['set-cookie']).toBeUndefined();
     expect(authService.register).toHaveBeenCalledWith(
       expect.objectContaining({
         email: 'joao@example.com',
@@ -188,6 +185,7 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
     authService.register.mockResolvedValue({
       userId: 'new-team-user',
       teamOnly: true,
+      verificationRequired: false,
     });
     tokenService.verify.mockResolvedValue({
       sub: 'actor-1',
@@ -211,7 +209,11 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
       })
       .expect(200);
 
-    expect(res.body).toEqual({ ok: true, userId: 'new-team-user' });
+    expect(res.body).toEqual({
+      ok: true,
+      userId: 'new-team-user',
+      verificationRequired: false,
+    });
     const cookies = res.headers['set-cookie'] as unknown as
       string[] | undefined;
     expect(cookies ?? []).toHaveLength(0);

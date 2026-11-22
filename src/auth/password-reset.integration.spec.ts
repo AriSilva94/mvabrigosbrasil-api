@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import type { EmailVerificationService } from './email-verification.service';
 import { RedisService } from '../redis/redis.service';
 import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
@@ -92,6 +93,7 @@ describe('AuthService password reset (integration, real Redis)', () => {
       redis,
       mailService as unknown as MailService,
       config as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 

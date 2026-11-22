@@ -884,6 +884,7 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
         data: {
           email,
           passwordHash: await bcrypt.hash('CurrentPassword123', 4),
+          emailVerified: true,
         },
       });
       userIds.push(user.id);
@@ -1159,6 +1160,57 @@ describe('Auth E2E - 16 login edge cases (doc 03 §12)', () => {
     await request(app.getHttpServer())
       .post('/api/v1/auth/reset-password')
       .send({ token, password: 'AnotherPass!' })
+      .expect(400);
+  });
+
+  it('Case 17: a new account cannot log in until the e-mail is confirmed, and the link is single-use', async () => {
+    const email = EMAIL(17, '-verify');
+    const registered = await request(app.getHttpServer())
+      .post('/api/v1/auth/register')
+      .send({ email, password: 'NewAccount123', registerType: 'voluntario' })
+      .expect(200);
+    const userId = (registered.body as { userId: string }).userId;
+    userIds.push(userId);
+    expect(registered.body).toEqual({
+      ok: true,
+      userId,
+      verificationRequired: true,
+    });
+    expect(registered.headers['set-cookie']).toBeUndefined();
+
+    const blocked = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password: 'NewAccount123' })
+      .expect(403);
+    expect(blocked.body).toMatchObject({ code: 'EMAIL_NOT_VERIFIED' });
+
+    const token = randomBytes(32).toString('base64url');
+    const key = `emailverify:${sha256(token)}`;
+    redisPwdResetKeys.push(key, `emailverify_user:${userId}`);
+    await redis.client.set(key, userId, 'EX', 60);
+
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/verify-email')
+      .send({ token, password: 'SenhaDoAtacante123' })
+      .expect(400)
+      .expect((res) =>
+        expect(res.body).toMatchObject({ code: 'INVALID_PASSWORD' }),
+      );
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password: 'NewAccount123' })
+      .expect(403);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/verify-email')
+      .send({ token, password: 'NewAccount123' })
+      .expect(200, { ok: true });
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ email, password: 'NewAccount123' })
+      .expect(200);
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/verify-email')
+      .send({ token, password: 'NewAccount123' })
       .expect(400);
   });
 });

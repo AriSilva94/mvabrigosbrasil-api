@@ -14,6 +14,7 @@ import { SheltersModule } from './shelters/shelters.module';
 import { TeamModule } from './team/team.module';
 import { VacanciesModule } from './vacancies/vacancies.module';
 import { VolunteersModule } from './volunteers/volunteers.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { VolunteersModule } from './volunteers/volunteers.module';
     AdminModule,
     PublicDataModule,
     ChatModule,
+    WebhooksModule,
   ],
   controllers: [],
   providers: [],

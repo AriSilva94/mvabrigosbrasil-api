@@ -5,6 +5,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LegacyMigrationService } from './legacy-migration.service';
+import { EmailVerificationService } from './email-verification.service';
 import { JwtAuthModule } from './jwt/jwt.module';
 import { PasswordModule } from './password/password.module';
 import { UsersModule } from '../users/users.module';
@@ -75,6 +76,7 @@ import type { Request } from 'express';
   providers: [
     AuthService,
     LegacyMigrationService,
+    EmailVerificationService,
     // Ordem importa: throttling primeiro (rejeita rajadas antes de gastar
     // trabalho de auth), depois autenticação, depois autorização por role.
     { provide: APP_GUARD, useClass: ThrottlerGuard },

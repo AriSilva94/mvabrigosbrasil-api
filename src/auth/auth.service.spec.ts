@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { BadRequestException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import type { EmailVerificationService } from './email-verification.service';
 import type { UsersService } from '../users/users.service';
 import type { PasswordService } from './password/password.service';
 import type { LegacyMigrationService } from './legacy-migration.service';
@@ -110,6 +111,7 @@ describe('AuthService.login', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -267,6 +269,38 @@ describe('AuthService.login', () => {
     expect(passwordService.burnVerification).not.toHaveBeenCalled();
   });
 
+  it('403 EMAIL_NOT_VERIFIED when the password is right but the account is unverified, without opening a session', async () => {
+    usersService.findByEmail.mockResolvedValue(
+      makeUser({ emailVerified: false }),
+    );
+    passwordService.verify.mockResolvedValue({
+      valid: true,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.login('joao@example.com', 'right'),
+    ).rejects.toMatchObject({
+      status: 403,
+      response: { code: 'EMAIL_NOT_VERIFIED' },
+    });
+    expect(sessionService.create).not.toHaveBeenCalled();
+  });
+
+  it('401 (never 403) when the password is wrong, even if the account is unverified', async () => {
+    usersService.findByEmail.mockResolvedValue(
+      makeUser({ emailVerified: false }),
+    );
+    passwordService.verify.mockResolvedValue({
+      valid: false,
+      needsRehash: false,
+    });
+
+    await expect(
+      service.login('joao@example.com', 'wrong'),
+    ).rejects.toMatchObject({ status: 401 });
+  });
+
   it('R4: 401 generic error when only legacy exists but password is wrong', async () => {
     const legacy = makeLegacy();
     usersService.findByEmail.mockResolvedValue(null);
@@ -329,9 +363,11 @@ describe('AuthService.register', () => {
   let sessionService: jest.Mocked<Pick<SessionService, 'create'>>;
   let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
   let prisma: { user: { findFirst: jest.Mock; create: jest.Mock } };
+  let emailVerification: { issue: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
+    emailVerification = { issue: jest.fn().mockResolvedValue(undefined) };
     usersService = { findByEmail: jest.fn().mockResolvedValue(null) };
     passwordService = { hash: jest.fn().mockResolvedValue('hashed-pw') };
     sessionService = {
@@ -355,6 +391,7 @@ describe('AuthService.register', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      emailVerification as unknown as EmailVerificationService,
     );
   });
 
@@ -435,6 +472,8 @@ describe('AuthService.register', () => {
       }) as unknown,
     });
     expect(result.teamOnly).toBe(true);
+    expect(result.verificationRequired).toBe(false);
+    expect(emailVerification.issue).not.toHaveBeenCalled();
     expect(result.userId).toBe('new-user-1');
     expect(result.at).toBeUndefined();
     expect(result.rt).toBeUndefined();
@@ -533,7 +572,7 @@ describe('AuthService.register', () => {
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
-  it('normal register (no teamOnly): origin=supabase_native, creatorProfileId=null, emits session', async () => {
+  it('normal register (no teamOnly): origin=supabase_native, creatorProfileId=null, unverified, no session', async () => {
     const result = await service.register(
       { email: 'Novo@B.com', password: 'secretpw', registerType: 'voluntario' },
       null,
@@ -546,16 +585,20 @@ describe('AuthService.register', () => {
         origin: 'supabase_native',
         isTeamOnly: false,
         role: 'voluntario',
-        emailVerified: true,
+        emailVerified: false,
         passwordHash: 'hashed-pw',
       }) as unknown,
     });
     expect(result.teamOnly).toBe(false);
     expect(result.userId).toBe('new-user-1');
-    expect(result.at).toBe('signed-jwt');
-    expect(result.rt).toBe('rt-1');
-    expect(result.sid).toBe('sid-1');
-    expect(sessionService.create).toHaveBeenCalledWith('new-user-1');
+    expect(result.verificationRequired).toBe(true);
+    expect(result.at).toBeUndefined();
+    expect(result.sid).toBeUndefined();
+    expect(sessionService.create).not.toHaveBeenCalled();
+    expect(emailVerification.issue).toHaveBeenCalledWith(
+      'new-user-1',
+      'novo@b.com',
+    );
   });
 
   it('invalid/absent registerType falls back to abrigo', async () => {
@@ -600,6 +643,7 @@ describe('AuthService.me', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -655,6 +699,7 @@ describe('AuthService.postLoginRedirect', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -756,6 +801,7 @@ describe('AuthService.refresh', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -831,6 +877,7 @@ describe('AuthService.logout', () => {
       {} as unknown as RedisService,
       {} as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -892,6 +939,7 @@ describe('AuthService.forgotPassword', () => {
       redisService as unknown as RedisService,
       mailService as unknown as MailService,
       config as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -973,7 +1021,7 @@ describe('AuthService.forgotPassword', () => {
     );
   });
 
-  it('does not wait for the SMTP delivery (same response time with or without account)', async () => {
+  it('does not wait for the email delivery (same response time with or without account)', async () => {
     usersService.findByEmail.mockResolvedValue(makeUser());
     mailService.sendPasswordReset.mockReturnValue(new Promise(() => {}));
 
@@ -995,7 +1043,7 @@ describe('AuthService.resetPassword', () => {
   let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
   let prisma: {
-    user: { update: jest.Mock };
+    user: { update: jest.Mock; findUnique: jest.Mock };
     wpUserLegacy: { findUnique: jest.Mock };
   };
   let redisClient: {
@@ -1006,13 +1054,20 @@ describe('AuthService.resetPassword', () => {
   let redisService: { client: unknown };
   let legacyMigrationService: { setPassword: jest.Mock; migrate: jest.Mock };
   let usersService: { findByEmail: jest.Mock };
+  let mailService: { sendPasswordChanged: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
+    mailService = {
+      sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
+    };
     passwordService = { hash: jest.fn().mockResolvedValue('new-bcrypt-hash') };
     sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
     prisma = {
-      user: { update: jest.fn().mockResolvedValue(undefined) },
+      user: {
+        update: jest.fn().mockResolvedValue(undefined),
+        findUnique: jest.fn().mockResolvedValue({ email: 'joao@example.com' }),
+      },
       wpUserLegacy: { findUnique: jest.fn() },
     };
     redisClient = {
@@ -1035,8 +1090,9 @@ describe('AuthService.resetPassword', () => {
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
       redisService as unknown as RedisService,
-      {} as unknown as MailService,
+      mailService as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -1065,6 +1121,26 @@ describe('AuthService.resetPassword', () => {
       'pwdreset:other-token-hash',
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
+  });
+
+  it('sends the password-changed notice to the account e-mail', async () => {
+    redisClient.getdel.mockResolvedValue('user-1');
+
+    await service.resetPassword('tok', 'newpassword123');
+
+    expect(mailService.sendPasswordChanged).toHaveBeenCalledWith(
+      'joao@example.com',
+    );
+  });
+
+  it('still succeeds when looking up the e-mail for the notice fails', async () => {
+    redisClient.getdel.mockResolvedValue('user-1');
+    prisma.user.findUnique.mockRejectedValue(new Error('db down'));
+
+    await expect(
+      service.resetPassword('tok', 'newpassword123'),
+    ).resolves.toEqual({ ok: true });
+    expect(mailService.sendPasswordChanged).not.toHaveBeenCalled();
   });
 
   it('legacy token: migrates the WordPress user with the new password and links posts', async () => {
@@ -1173,9 +1249,13 @@ describe('AuthService.changePassword', () => {
   let prisma: { user: { findUnique: jest.Mock; update: jest.Mock } };
   let legacyMigrationService: { setPassword: jest.Mock };
   let redisClient: { smembers: jest.Mock; del: jest.Mock };
+  let mailService: { sendPasswordChanged: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
+    mailService = {
+      sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
+    };
     passwordService = {
       verify: jest.fn(),
       hash: jest.fn().mockResolvedValue('new-bcrypt-hash'),
@@ -1203,8 +1283,9 @@ describe('AuthService.changePassword', () => {
       {} as unknown as TokenService,
       prisma as unknown as PrismaService,
       { client: redisClient } as unknown as RedisService,
-      {} as unknown as MailService,
+      mailService as unknown as MailService,
       {} as unknown as ConfigService<Env, true>,
+      {} as unknown as EmailVerificationService,
     );
   });
 
@@ -1289,6 +1370,9 @@ describe('AuthService.changePassword', () => {
     );
 
     expect(result).toEqual({ ok: true });
+    expect(mailService.sendPasswordChanged).toHaveBeenCalledWith(
+      'joao@example.com',
+    );
     expect(passwordService.hash).toHaveBeenCalledWith('newpassword123');
     expect(legacyMigrationService.setPassword).toHaveBeenCalledWith(
       'user-1',

@@ -539,6 +539,7 @@ describe('Auth security regressions (E2E)', () => {
           email: member,
           passwordHash: await bcrypt.hash(PASSWORD, 4),
           role: 'abrigo',
+          emailVerified: true,
           isTeamOnly: true,
           teamDisabled: true,
           creatorProfileId: ownerRow.id,

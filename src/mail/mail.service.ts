@@ -1,86 +1,197 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
+import { RedisService } from '../redis/redis.service';
 import type { EmailAttachment } from './email-assets';
 import { passwordResetEmail } from './password-reset.template';
+import type { EmailContent } from './password-reset.template';
+import { emailVerificationEmail } from './email-verification.template';
+import { passwordChangedEmail } from './password-changed.template';
 
-export const MAIL_TRANSPORT = 'MAIL_TRANSPORT';
+export const RESEND_CLIENT = 'RESEND_CLIENT';
 
-// Recorte do nodemailer que este serviço usa, para os testes injetarem um
-// transporte falso sem depender dos tipos do pacote.
-export interface MailTransport {
-  sendMail(payload: {
-    from: string;
-    to: string;
-    subject: string;
-    html: string;
-    text: string;
-    attachments: EmailAttachment[];
-  }): Promise<unknown>;
+// Recorte do SDK do Resend que este serviço usa, para os testes injetarem um
+// cliente falso. O SDK não lança em erro de API: devolve `error`.
+export interface ResendLike {
+  emails: {
+    send(payload: {
+      from: string;
+      to: string;
+      subject: string;
+      html: string;
+      text: string;
+      attachments?: {
+        filename: string;
+        content: Buffer;
+        contentId: string;
+        contentType: string;
+      }[];
+    }): Promise<{ data: unknown; error: { message: string } | null }>;
+  };
 }
 
 // Mesmo prazo do TTL do token em AuthService (`PWD_RESET_TTL_SECONDS`).
 const PASSWORD_RESET_VALIDITY_MINUTES = 60;
+// Mesmo prazo do TTL do token em EmailVerificationService.
+const EMAIL_VERIFICATION_VALIDITY_HOURS = 24;
 
-const DEFAULT_FROM = 'MV Abrigos <contato@mvabrigosbrasil.com.br>';
+const DEFAULT_DAILY_LIMIT = 100;
+// Parte da cota que cadastro, verificação e avisos podem usar. O resto fica
+// reservada à recuperação de senha, que não pode parar por abuso do cadastro.
+const STANDARD_SHARE = 0.7;
+const QUOTA_KEY_TTL_SECONDS = 2 * 24 * 60 * 60;
+
+type MailPriority = 'critical' | 'standard';
+
+const DEFAULT_FROM = 'MV Abrigos <no-reply@mail.mvabrigosbrasil.com.br>';
 const DEFAULT_SITE_URL = 'https://mvabrigosbrasil.com.br';
+
+function toResendAttachment(attachment: EmailAttachment) {
+  return {
+    filename: attachment.filename,
+    content: attachment.content,
+    contentId: attachment.cid,
+    contentType: attachment.contentType,
+  };
+}
 
 @Injectable()
 export class MailService {
   private readonly logger = new Logger(MailService.name);
   private readonly from: string;
   private readonly siteUrl: string;
+  private readonly dailyLimit: number;
 
   constructor(
-    // `null` em dev/teste sempre que SMTP_HOST está ausente (ver a factory do
-    // MailModule): sendPasswordReset só loga nesse caso e nunca lança.
-    @Inject(MAIL_TRANSPORT) private readonly transport: MailTransport | null,
+    // `null` em dev/teste sempre que RESEND_API_KEY está ausente (ver a
+    // factory do MailModule): os envios só logam e nunca lançam.
+    @Inject(RESEND_CLIENT) private readonly client: ResendLike | null,
     config: ConfigService<Env, true>,
+    @Optional() private readonly redisService?: RedisService,
   ) {
+    this.dailyLimit =
+      config.get('MAIL_DAILY_LIMIT', { infer: true }) ?? DEFAULT_DAILY_LIMIT;
     this.from = config.get('MAIL_FROM', { infer: true }) ?? DEFAULT_FROM;
     const appUrl = config.get('APP_URL', { infer: true });
     this.siteUrl = appUrl ? new URL(appUrl).origin : DEFAULT_SITE_URL;
   }
 
   async sendPasswordReset(email: string, link: string): Promise<void> {
-    const { subject, html, text, attachments } = passwordResetEmail(
+    const content = passwordResetEmail(
       link,
       PASSWORD_RESET_VALIDITY_MINUTES,
       this.siteUrl,
     );
 
-    if (!this.transport) {
-      if (process.env.NODE_ENV !== 'production') {
-        // Conveniência de dev/teste: sem SMTP_HOST, loga o link (com token)
-        // para permitir seguir o fluxo manualmente. Nunca em produção.
-        this.logger.log(
-          `SMTP_HOST não configurado — link de redefinição de senha para ${email}: ${link}`,
-        );
-      } else {
-        // Em produção, SMTP ausente é falha de configuração — nunca logar o
-        // token em claro. Apenas avisa e segue (forgot-password nunca deve
-        // falhar por causa do envio de e-mail).
-        this.logger.warn(
-          `SMTP_HOST não configurado em produção — e-mail de redefinição de senha para ${email} não pôde ser enviado`,
-        );
+    if (!this.client) {
+      this.logWithoutClient('redefinição de senha', email, link);
+      return;
+    }
+
+    await this.deliver(email, content, 'redefinição de senha', 'critical');
+  }
+
+  async sendEmailVerification(email: string, link: string): Promise<void> {
+    const content = emailVerificationEmail(
+      link,
+      EMAIL_VERIFICATION_VALIDITY_HOURS,
+      this.siteUrl,
+    );
+
+    if (!this.client) {
+      this.logWithoutClient('confirmação de e-mail', email, link);
+      return;
+    }
+
+    await this.deliver(email, content, 'confirmação de e-mail', 'standard');
+  }
+
+  async sendPasswordChanged(email: string): Promise<void> {
+    if (!this.client) return;
+
+    const content = passwordChangedEmail(
+      new URL('/recuperar-senha', this.siteUrl).toString(),
+      this.siteUrl,
+    );
+    await this.deliver(email, content, 'senha alterada', 'standard');
+  }
+
+  // A cota do Resend é da conta inteira e e-mail é disparável por qualquer
+  // visitante (cadastro, reenvio). O contador local impede que abuso esgote a
+  // cota e bloqueie a recuperação de senha. Falha do Redis não impede o envio.
+  private async reserveQuota(priority: MailPriority): Promise<boolean> {
+    if (!this.redisService) return true;
+
+    const cap =
+      priority === 'critical'
+        ? this.dailyLimit
+        : Math.floor(this.dailyLimit * STANDARD_SHARE);
+    const key = `mail_quota:${new Date().toISOString().slice(0, 10)}`;
+    try {
+      const { client } = this.redisService;
+      const count = await client.incr(key);
+      if (count === 1) await client.expire(key, QUOTA_KEY_TTL_SECONDS);
+      if (count > cap) {
+        await client.decr(key);
+        return false;
       }
+      return true;
+    } catch (err) {
+      this.logger.error(
+        'Falha ao consultar o teto diário de e-mails',
+        err instanceof Error ? err.stack : String(err),
+      );
+      return true;
+    }
+  }
+
+  // Dev/teste: loga o link (com token) para seguir o fluxo manualmente.
+  // Produção: ausência de chave é falha de configuração, e o token nunca é
+  // logado em claro.
+  private logWithoutClient(kind: string, email: string, link: string): void {
+    if (process.env.NODE_ENV !== 'production') {
+      this.logger.log(
+        `RESEND_API_KEY não configurada — link de ${kind} para ${email}: ${link}`,
+      );
+      return;
+    }
+    this.logger.warn(
+      `RESEND_API_KEY não configurada em produção — e-mail de ${kind} para ${email} não pôde ser enviado`,
+    );
+  }
+
+  // Nunca lança: um problema no envio não pode derrubar o fluxo de quem
+  // chamou (ex.: forgot-password responde igual com ou sem e-mail enviado).
+  private async deliver(
+    to: string,
+    content: EmailContent,
+    kind: string,
+    priority: MailPriority,
+  ): Promise<void> {
+    if (!(await this.reserveQuota(priority))) {
+      this.logger.warn(
+        `Teto diário de e-mails atingido — e-mail de ${kind} não enviado`,
+      );
       return;
     }
 
     try {
-      await this.transport.sendMail({
+      const { error } = await (this.client as ResendLike).emails.send({
         from: this.from,
-        to: email,
-        subject,
-        html,
-        text,
-        attachments,
+        to,
+        subject: content.subject,
+        html: content.html,
+        text: content.text,
+        attachments: content.attachments.map(toResendAttachment),
       });
+      if (error) {
+        this.logger.error(
+          `Falha ao enviar e-mail de ${kind} para ${to}: ${error.message}`,
+        );
+      }
     } catch (err) {
-      // forgot-password nunca deve falhar por causa de um problema no envio
-      // de e-mail (doc 03 §10): loga e segue.
       this.logger.error(
-        `Falha ao enviar e-mail de redefinição de senha para ${email}`,
+        `Falha ao enviar e-mail de ${kind} para ${to}`,
         err instanceof Error ? err.stack : String(err),
       );
     }
