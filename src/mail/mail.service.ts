@@ -10,8 +10,7 @@ import { passwordChangedEmail } from './password-changed.template';
 
 export const RESEND_CLIENT = 'RESEND_CLIENT';
 
-// Recorte do SDK do Resend que este serviço usa, para os testes injetarem um
-// cliente falso. O SDK não lança em erro de API: devolve `error`.
+// Recorte do SDK usado aqui; ele devolve `error` em vez de lançar.
 export interface ResendLike {
   emails: {
     send(payload: {
@@ -32,12 +31,10 @@ export interface ResendLike {
 
 // Mesmo prazo do TTL do token em AuthService (`PWD_RESET_TTL_SECONDS`).
 const PASSWORD_RESET_VALIDITY_MINUTES = 60;
-// Mesmo prazo do TTL do token em EmailVerificationService.
 const EMAIL_VERIFICATION_VALIDITY_HOURS = 24;
 
 const DEFAULT_DAILY_LIMIT = 100;
-// Parte da cota que cadastro, verificação e avisos podem usar. O resto fica
-// reservada à recuperação de senha, que não pode parar por abuso do cadastro.
+// Fração da cota para cadastro e avisos; o resto fica reservado ao reset de senha.
 const STANDARD_SHARE = 0.7;
 const QUOTA_KEY_TTL_SECONDS = 2 * 24 * 60 * 60;
 
@@ -63,8 +60,6 @@ export class MailService {
   private readonly dailyLimit: number;
 
   constructor(
-    // `null` em dev/teste sempre que RESEND_API_KEY está ausente (ver a
-    // factory do MailModule): os envios só logam e nunca lançam.
     @Inject(RESEND_CLIENT) private readonly client: ResendLike | null,
     config: ConfigService<Env, true>,
     @Optional() private readonly redisService?: RedisService,
@@ -116,9 +111,7 @@ export class MailService {
     await this.deliver(email, content, 'senha alterada', 'standard');
   }
 
-  // A cota do Resend é da conta inteira e e-mail é disparável por qualquer
-  // visitante (cadastro, reenvio). O contador local impede que abuso esgote a
-  // cota e bloqueie a recuperação de senha. Falha do Redis não impede o envio.
+  // A cota do Resend é da conta toda: o teto local impede que abuso do cadastro bloqueie o reset.
   private async reserveQuota(priority: MailPriority): Promise<boolean> {
     if (!this.redisService) return true;
 
@@ -145,9 +138,7 @@ export class MailService {
     }
   }
 
-  // Dev/teste: loga o link (com token) para seguir o fluxo manualmente.
-  // Produção: ausência de chave é falha de configuração, e o token nunca é
-  // logado em claro.
+  // Em produção sem chave só avisa: o token nunca é logado.
   private logWithoutClient(kind: string, email: string, link: string): void {
     if (process.env.NODE_ENV !== 'production') {
       this.logger.log(
@@ -160,8 +151,7 @@ export class MailService {
     );
   }
 
-  // Nunca lança: um problema no envio não pode derrubar o fluxo de quem
-  // chamou (ex.: forgot-password responde igual com ou sem e-mail enviado).
+  // Nunca lança: falha de envio não pode derrubar o fluxo de quem chamou.
   private async deliver(
     to: string,
     content: EmailContent,

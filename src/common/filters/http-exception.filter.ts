@@ -33,8 +33,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
         const body: { error: string; code?: string; details?: unknown } = {
           error: payload.error,
         };
-        // Código estável para o frontend decidir o que mostrar sem comparar
-        // a mensagem em pt-BR.
         if ('code' in payload && typeof payload.code === 'string') {
           body.code = payload.code;
         }

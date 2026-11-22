@@ -28,8 +28,6 @@ export const envSchema = z.object({
     z.string().optional(),
   ),
   MAIL_FROM: z.string().optional(),
-  // Teto diário de e-mails deste ambiente. O plano free do Resend dá 100/dia
-  // para a conta toda, então dev e produção devem somar no máximo isso.
   MAIL_DAILY_LIMIT: z.preprocess(
     (v) => (v === '' ? undefined : v),
     z.coerce.number().int().positive().optional(),

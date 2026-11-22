@@ -81,8 +81,6 @@ export type LoginResult = {
 export type RegisterResult = {
   userId: string;
   teamOnly: boolean;
-  // Cadastro normal não abre sessão: o login só é liberado depois de
-  // confirmar o e-mail.
   verificationRequired: boolean;
   // Presentes apenas quando `teamOnly === false` (uma sessão é emitida para
   // o usuário recém-criado, igual ao fluxo de login). Quando `teamOnly ===
@@ -223,8 +221,7 @@ export class AuthService {
       throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
     }
 
-    // Só depois de a senha conferir: antes disso, o 403 revelaria que o
-    // e-mail tem conta.
+    // Só depois de a senha conferir: senão o 403 revela que o e-mail tem conta.
     if (!authenticatedUser.emailVerified) {
       throw new ForbiddenException({
         error: EMAIL_NOT_VERIFIED,
@@ -336,8 +333,6 @@ export class AuthService {
       data: {
         email: normalizedEmail,
         passwordHash,
-        // Acesso de equipe é criado por um titular logado; o cadastro normal
-        // precisa confirmar o e-mail.
         emailVerified: teamOnly,
         role,
         origin: teamOnly
@@ -536,7 +531,6 @@ export class AuthService {
     return { ok: true };
   }
 
-  // Sempre { ok: true }: não revela se o e-mail tem conta.
   async resendVerification(email: string): Promise<{ ok: true }> {
     await this.emailVerificationService.resend(email);
     return { ok: true };
@@ -577,7 +571,6 @@ export class AuthService {
     return { ok: true };
   }
 
-  // A senha já foi trocada: nada aqui pode fazer o pedido falhar.
   private async notifyPasswordChanged(userId: string): Promise<void> {
     try {
       const user = await this.prisma.user.findUnique({

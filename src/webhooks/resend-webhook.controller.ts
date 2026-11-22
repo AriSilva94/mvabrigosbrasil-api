@@ -16,7 +16,6 @@ import { Public } from '../auth/decorators/public';
 import { RESEND_CLIENT } from '../mail/mail.service';
 import type { Env } from '../config/env.validation';
 
-// Recorte do SDK usado aqui; o cliente é null sem RESEND_API_KEY.
 interface ResendWebhooksClient {
   webhooks: {
     verify(options: {
@@ -27,7 +26,6 @@ interface ResendWebhooksClient {
   };
 }
 
-// Eventos de entrega que merecem atenção; os demais só confirmam o recebimento.
 const ATTENTION_EVENTS = new Set([
   'email.bounced',
   'email.complained',
@@ -76,8 +74,7 @@ export class ResendWebhookController {
     }
 
     if (ATTENTION_EVENTS.has(event.type)) {
-      // Só o id do e-mail: o endereço do destinatário é dado pessoal e o
-      // Resend já o mostra no painel a partir do id.
+      // Só o id: o e-mail do destinatário é dado pessoal.
       const emailId =
         'email_id' in event.data ? String(event.data.email_id) : 'desconhecido';
       this.logger.warn(`Resend ${event.type} (email_id=${emailId})`);

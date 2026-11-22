@@ -14,7 +14,6 @@ import type { Env } from '../config/env.validation';
 export type ConfirmResult = 'ok' | 'invalid' | 'wrong_password';
 
 const VERIFICATION_TTL_SECONDS = 24 * 60 * 60;
-// Protege a cota diária do Resend e impede o reenvio em rajada.
 const RESEND_COOLDOWN_SECONDS = 60;
 
 function sha256(value: string): string {
@@ -67,14 +66,10 @@ export class EmailVerificationService {
       this.config.get('APP_URL', { infer: true }),
     );
     link.searchParams.set('token', token);
-    // Sem await: o tempo de resposta não pode depender do envio. Falhas já
-    // são logadas pelo MailService.
     void this.mailService.sendEmailVerification(email, link.toString());
   }
 
-  // Exige a senha do cadastro: sem ela, quem cadastrou o e-mail de outra
-  // pessoa com a própria senha ganharia a conta assim que a vítima clicasse
-  // no link. Senha errada não consome o link.
+  // Exige a senha do cadastro: o link sozinho não pode ativar conta criada por terceiros.
   async confirm(token: string, password: string): Promise<ConfirmResult> {
     const key = tokenKey(sha256(token ?? ''));
     const userId = await this.redisService.client.get(key);
@@ -102,8 +97,6 @@ export class EmailVerificationService {
     return count > 0 ? 'ok' : 'invalid';
   }
 
-  // Silencioso para e-mail inexistente ou já verificado: o endpoint não pode
-  // revelar quais e-mails têm conta.
   async resend(email: string): Promise<void> {
     const user = await this.usersService.findByEmail(email ?? '');
     if (!user || user.emailVerified) return;

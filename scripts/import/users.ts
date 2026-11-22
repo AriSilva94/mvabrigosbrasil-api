@@ -106,9 +106,7 @@ export function mapAuthUserToUser(row: AuthUserRow): UserInsert {
     id: row.id,
     email: row.email.trim().toLowerCase(),
     passwordHash: row.encrypted_password ?? null,
-    // Conta importada é anterior à verificação de e-mail do NestJS: só cadastros
-    // novos confirmam o e-mail. Sem isto, um import:sync trancaria para fora do
-    // login quem nunca confirmou o e-mail no Supabase.
+    // Conta importada é anterior à verificação de e-mail do NestJS.
     emailVerified: true,
     fullName: row.full_name ?? null,
     phone: row.phone ?? null,
