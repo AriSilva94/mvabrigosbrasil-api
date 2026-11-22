@@ -307,7 +307,6 @@ describe('AuthController (POST /auth/register, GET /auth/me)', () => {
   });
 });
 
-// Task 9: POST /auth/refresh, POST /auth/logout.
 describe('AuthController (POST /auth/refresh, POST /auth/logout)', () => {
   let app: INestApplication;
   const authService = {
@@ -476,7 +475,6 @@ describe('AuthController (POST /auth/refresh, POST /auth/logout)', () => {
   });
 });
 
-// Task 10: doc 03 §10 / doc 05 §3.1.
 describe('AuthController (POST /auth/forgot-password, /reset-password, /change-password)', () => {
   let app: INestApplication;
   const authService = {

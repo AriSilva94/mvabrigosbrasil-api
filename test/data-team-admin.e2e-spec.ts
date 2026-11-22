@@ -337,8 +337,6 @@ describe('Data domains E2E - team and admin (slice C)', () => {
     expect(
       await redis.client.sismember(`user_sess:${ids.teamMember}`, sid),
     ).toBe(0);
-    // A sessão revogada derruba o access token na hora (antes ele valia até
-    // expirar e só o TeamActiveGuard barrava, com 403).
     await request(app.getHttpServer())
       .post('/api/v1/vacancies')
       .set('Cookie', `mv_at=${accessToken}`)

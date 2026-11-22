@@ -14,12 +14,6 @@ import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.validation';
 import type { User } from '../generated/prisma/client';
 
-// Integration test against a REAL Redis (same instance/pattern used by
-// `src/redis/session.service.spec.ts`: db 15 so it never collides with
-// dev data on db 0). Proves the actual Redis round-trip for the
-// `pwdreset:{sha256(token)}` key: TTL is set, a successful reset consumes
-// it (single-use — reusing the same token afterwards is rejected), and an
-// absent/expired key is rejected too (task-10 brief case 14).
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -135,7 +129,6 @@ describe('AuthService password reset (integration, real Redis)', () => {
     const key = `pwdreset:${sha256(token)}`;
     expect(await redis.client.get(key)).toBeNull();
 
-    // Reusing the same (now-consumed) token must be rejected.
     await expect(
       service.resetPassword(token, 'anotherpassword123'),
     ).rejects.toMatchObject({
@@ -153,7 +146,6 @@ describe('AuthService password reset (integration, real Redis)', () => {
     const token = new URL(link).searchParams.get('token') as string;
     const key = `pwdreset:${sha256(token)}`;
 
-    // Simulate expiry directly instead of waiting out the real 60min TTL.
     await redis.client.del(key);
 
     await expect(

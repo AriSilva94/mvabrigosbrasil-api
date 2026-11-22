@@ -11,10 +11,6 @@ const WP_ROLE_POST_TYPES: string[] = [UserRole.abrigo, UserRole.voluntario];
 
 type TxClient = Prisma.TransactionClient;
 
-// Migração lazy do usuário legado WordPress no primeiro login bem-sucedido
-// (doc 03 §6). Tudo roda numa única transação Prisma: uma migração parcial
-// não pode existir — ou o usuário sai com senha nova + vínculos WP + flag
-// `migrated`, ou nada muda.
 @Injectable()
 export class LegacyMigrationService {
   constructor(
@@ -28,8 +24,6 @@ export class LegacyMigrationService {
     existingUser?: User | null,
   ): Promise<User> {
     const userId = existingUser?.id ?? randomUUID();
-    // bcrypt é custoso de propósito (custo configurável); calculamos fora da
-    // transação para não segurar a conexão/lock do Postgres durante o hash.
     const passwordHash = await this.passwordService.hash(plainPassword);
     const wpUserId = Number(legacy.id);
     const email = (legacy.userEmail ?? existingUser?.email ?? '').toLowerCase();
@@ -38,8 +32,6 @@ export class LegacyMigrationService {
     const isTeamOnly = existingUser?.isTeamOnly ?? false;
 
     return this.prisma.$transaction(async (tx) => {
-      // O estado lido antes de validar a senha pode ter mudado durante o
-      // bcrypt. O UPDATE condicional serializa login legado e troca de senha.
       const claimed = await tx.wpUserLegacy.updateMany({
         where: { id: legacy.id, migrated: false },
         data: { migrated: true, migratedAt: new Date() },
@@ -86,8 +78,6 @@ export class LegacyMigrationService {
         ? await findLegacyByEmail(tx, user.email, { pendingOnly: true })
         : [];
 
-      // Adquire os locks do legado antes do usuário, na mesma ordem usada
-      // pelo login lazy. Os vínculos são concluídos junto com a senha nova.
       for (const legacy of pending) {
         const claimed = await tx.wpUserLegacy.updateMany({
           where: { id: legacy.id, migrated: false },
@@ -133,8 +123,6 @@ export class LegacyMigrationService {
     });
   }
 
-  // wp_posts_raw filtrado por post_type/post_author, LIMIT 1 (via findFirst) —
-  // igual ao SELECT das subqueries do doc 03 §6, passos 3 e 4.
   private async linkPost(
     tx: TxClient,
     wpAuthorId: bigint,
@@ -149,8 +137,6 @@ export class LegacyMigrationService {
     await apply(Number(post.id));
   }
 
-  // Espelha `UsersService.resolveRole`, mas a partir do wp_user_id legado em
-  // vez de um `User` já persistido (doc 03 §9).
   private async resolveRoleFromWp(
     tx: TxClient,
     wpAuthorId: bigint,

@@ -32,16 +32,12 @@ export const envSchema = z.object({
     (v) => (v === '' ? undefined : v),
     z.coerce.number().int().positive().optional(),
   ),
-  // Segredo compartilhado com o Next para isentar suas chamadas server-side
-  // do rate limit (ver `isInternalRequest`).
   INTERNAL_API_TOKEN: z.preprocess(
     (v) => (v === '' ? undefined : v),
     z.string().min(32).optional(),
   ),
 });
 
-// Cookie de sessão sem Secure atrás de HTTPS viaja em texto claro em
-// qualquer requisição http (ex.: link antigo, downgrade de rede).
 const envWithInvariants = envSchema.superRefine((env, ctx) => {
   if (
     env.NODE_ENV === 'production' &&

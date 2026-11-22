@@ -4,10 +4,6 @@ import {
   type AuthUserRow,
 } from './users';
 
-/**
- * All rows below are SYNTHETIC — shaped like real `auth.users` LEFT JOIN
- * `public.profiles` rows, but no real user data.
- */
 function baseRow(overrides: Partial<AuthUserRow> = {}): AuthUserRow {
   return {
     id: '11111111-1111-1111-1111-111111111111',

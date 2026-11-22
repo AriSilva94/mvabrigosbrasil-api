@@ -28,7 +28,6 @@ export interface ResendLike {
   };
 }
 
-// Mesmo prazo do TTL do token em AuthService (`PWD_RESET_TTL_SECONDS`).
 const PASSWORD_RESET_VALIDITY_MINUTES = 60;
 const EMAIL_VERIFICATION_VALIDITY_HOURS = 24;
 

@@ -765,7 +765,6 @@ describe('AuthService.postLoginRedirect', () => {
   });
 });
 
-// Task 9: POST /auth/refresh (doc 03 §7, §10; doc 05 §3.1).
 describe('AuthService.refresh', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'resolveRole'>>;
   let sessionService: jest.Mocked<
@@ -857,7 +856,6 @@ describe('AuthService.refresh', () => {
   });
 });
 
-// Task 9: POST /auth/logout.
 describe('AuthService.logout', () => {
   let sessionService: jest.Mocked<Pick<SessionService, 'revoke'>>;
   let service: AuthService;
@@ -897,7 +895,6 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-// Task 10: doc 03 §10 / doc 05 §3.1 — recuperação de senha por e-mail.
 describe('AuthService.forgotPassword', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
   let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
@@ -969,7 +966,6 @@ describe('AuthService.forgotPassword', () => {
       /^http:\/\/localhost:3000\/redefinir-senha\?token=[A-Za-z0-9_-]+$/,
     );
 
-    // A chave gravada é o hash do token que está no link, nunca o token puro.
     const tokenInLink = new URL(link).searchParams.get('token') as string;
     expect(key).toBe(`pwdreset:${sha256(tokenInLink)}`);
   });
@@ -1115,7 +1111,6 @@ describe('AuthService.resetPassword', () => {
     expect(redisClient.getdel).toHaveBeenCalledWith(
       `pwdreset:${sha256(token)}`,
     );
-    // Os demais links pendentes do titular deixam de valer.
     expect(redisClient.del).toHaveBeenCalledWith(
       'pwdreset_subject:user-1',
       'pwdreset:other-token-hash',
@@ -1383,7 +1378,6 @@ describe('AuthService.changePassword', () => {
       'user-1',
       'sid-current',
     );
-    // Um link de recuperação pendente não pode desfazer a troca de senha.
     expect(redisClient.del).toHaveBeenCalledWith(
       'pwdreset_subject:user-1',
       'pwdreset:pending-hash',

@@ -35,27 +35,18 @@ function pwdResetKey(tokenHash: string): string {
   return `pwdreset:${tokenHash}`;
 }
 
-// Tokens emitidos por titular, para invalidar os links ainda pendentes quando
-// a senha muda por qualquer caminho.
 function pwdResetSubjectKey(subject: string): string {
   return `pwdreset_subject:${subject}`;
 }
 
-// Doc 03 §10: link válido por 60 minutos, uso único.
 const PWD_RESET_TTL_SECONDS = 60 * 60;
 const LEGACY_RESET_PREFIX = 'legacy:';
-// Mesma resposta para e-mail inexistente e senha errada: o login não pode
-// servir para descobrir quem tem conta.
 const INVALID_CREDENTIALS = 'E-mail ou senha inválidos.';
 const EMAIL_NOT_VERIFIED = 'E-mail não verificado.';
 const MIN_PASSWORD_LENGTH = 8;
 const PASSWORD_TOO_SHORT = 'A senha deve ter pelo menos 8 caracteres.';
-// O bcrypt ignora tudo depois do 72º byte: senhas maiores dariam a falsa
-// impressão de que o restante conta.
 const MAX_PASSWORD_BYTES = 72;
 const PASSWORD_TOO_LONG = 'A senha deve ter no máximo 72 caracteres.';
-// `admin` e `gerente` só são atribuídos pela administração, nunca por quem
-// se cadastra.
 const SELF_REGISTER_ROLES = new Set<UserRole>([
   UserRole.abrigo,
   UserRole.voluntario,
@@ -82,10 +73,6 @@ export type RegisterResult = {
   userId: string;
   teamOnly: boolean;
   verificationRequired: boolean;
-  // Presentes apenas quando `teamOnly === false` (uma sessão é emitida para
-  // o usuário recém-criado, igual ao fluxo de login). Quando `teamOnly ===
-  // true`, quem fica logado é o criador (actor), então nenhuma sessão nova
-  // é emitida para o usuário da equipe.
   at?: string;
   rt?: string;
   sid?: string;
@@ -115,15 +102,6 @@ export type PostLoginRedirectResult = {
   redirectTo: '/painel' | '/meu-cadastro';
 };
 
-// Implementa o algoritmo de login descrito em doc 03 §5 (R1-R4):
-// R1 - usuário nativo/importado com passwordHash válido no bcrypt (ou que
-//      precise de rehash de um formato legado gravado por import parcial).
-// R2 - fallback para o legado do WordPress ainda não migrado
-//      (`wp_users_legacy.migrated === false`).
-// R3 - legado já migrado nunca é consultado de novo (corrige o quirk do
-//      fluxo antigo que sobrescrevia senha nova com a senha WP antiga).
-// R4 - 401 genérico tanto para senha errada quanto para e-mail sem conta,
-//      com tempo de resposta equivalente (sem enumeração de contas).
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -150,14 +128,10 @@ export class AuthService {
         error: 'E-mail e senha são obrigatórios',
       });
     }
-    // Recusada antes de qualquer consulta: depois dela, conta existente e
-    // inexistente gastariam tempos diferentes.
     if (normalizedPassword.length > MAX_VERIFIABLE_LENGTH) {
       throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
     }
 
-    // Senha trocada/redefinida depois deste instante invalida este login,
-    // mesmo que a senha antiga já tenha sido conferida.
     let credentialCheckedAt = Date.now();
     const [user, [legacy = null]] = await Promise.all([
       this.usersService.findByEmail(normalizedEmail),
@@ -167,7 +141,6 @@ export class AuthService {
     let authenticatedUser: User | null = null;
     let migrated: boolean | null = null;
 
-    // R1
     if (user?.passwordHash) {
       const r = await this.passwordService.verify(
         normalizedPassword,
@@ -188,8 +161,6 @@ export class AuthService {
       }
     }
 
-    // R2 (só roda se R1 não autenticou e o legado ainda não foi migrado —
-    // R3: `migrated === true` nunca cai aqui, então `user_pass` não é lido)
     if (!authenticatedUser && legacy && legacy.migrated === false) {
       const r = await this.passwordService.verify(
         normalizedPassword,
@@ -202,8 +173,6 @@ export class AuthService {
           user,
         );
         migrated = false;
-        // A conta em `users` passou a ter a senha do WordPress: sessões
-        // abertas com a senha anterior não podem sobreviver.
         if (user) {
           await this.sessionService.revokeAll(user.id);
           credentialCheckedAt = Date.now();
@@ -211,10 +180,7 @@ export class AuthService {
       }
     }
 
-    // R4
     if (!authenticatedUser) {
-      // Só R1 com hash bcrypt gasta o tempo de um bcrypt; nos demais caminhos
-      // (sem conta, só legado, hash WordPress em `users`) ele é simulado.
       if (!user?.passwordHash?.startsWith('$2')) {
         await this.passwordService.burnVerification(normalizedPassword);
       }
@@ -260,10 +226,6 @@ export class AuthService {
     };
   }
 
-  // Doc 05 §3.1. `actor` são as claims da sessão atual (se houver), lidas do
-  // cookie `mv_at` pelo controller — ainda não há `JwtAuthGuard` global
-  // (Task 11), então este é o único jeito de saber quem está logado ao
-  // registrar um acesso de equipe (`teamOnly`).
   async register(
     dto: RegisterDto,
     actor: Claims | null,
@@ -300,8 +262,6 @@ export class AuthService {
         error: 'É necessário estar logado para criar acessos da equipe.',
       });
     }
-    // Mesma regra da tela /equipe: só o titular ativo de um abrigo cria
-    // acessos, e o acesso criado é sempre de abrigo.
     if (
       teamOnly &&
       (actor?.role !== UserRole.abrigo ||
@@ -313,8 +273,6 @@ export class AuthService {
       });
     }
 
-    // O legado do WordPress que ainda não migrou também é dono do e-mail:
-    // sem isto, quem cadastrasse o e-mail dele herdaria abrigo/voluntário.
     const [existing, [legacy]] = await Promise.all([
       this.usersService.findByEmail(normalizedEmail),
       findLegacyByEmail(this.prisma, normalizedEmail),
@@ -342,8 +300,6 @@ export class AuthService {
       },
     });
 
-    // teamOnly: o criador (actor) segue logado como ele mesmo — nenhuma
-    // sessão nova é emitida para o usuário de equipe recém-criado.
     if (teamOnly) {
       return {
         userId: created.id,
@@ -413,12 +369,6 @@ export class AuthService {
     };
   }
 
-  // Doc 03 §7, §10 / doc 05 §3.1. `sid`/`rt` vêm do cookie `mv_rt`
-  // (`${sid}.${rt}`, convenção da task 7), já separados pelo controller.
-  // `SessionService.rotate` aceita duplicatas apenas na janela curta de
-  // concorrência; fora dela, um `rt` rotacionado (ou desconhecido) devolve
-  // `null` e destrói a sessão. As claims do novo access token são recarregadas
-  // do banco (não do token antigo) para refletir `role`/`teamDisabled` atuais.
   async refresh(sid: string, rt: string): Promise<RefreshResult> {
     const rotated = await this.sessionService.rotate(sid, rt);
     if (!rotated) {
@@ -431,9 +381,6 @@ export class AuthService {
       : null;
 
     if (!user) {
-      // Usuário foi removido entre o login e o refresh: não há claims
-      // válidas para reconstruir. Revoga a sessão órfã por higiene e trata
-      // como sessão expirada.
       await this.sessionService.revoke(sid);
       throw new UnauthorizedException({ error: 'Sessão expirada' });
     }
@@ -453,8 +400,6 @@ export class AuthService {
     return { at, rt: rotated.rt, sid };
   }
 
-  // Idempotente: funciona sem sessão (sid nulo/desconhecido) — o controller
-  // sempre limpa os cookies e responde 200, com ou sem sessão ativa.
   async logout(sid: string | null): Promise<void> {
     if (!sid) {
       return;
@@ -462,12 +407,6 @@ export class AuthService {
     await this.sessionService.revoke(sid);
   }
 
-  // Doc 03 §10 / doc 05 §3.1. Nunca revela se o e-mail existe: sempre
-  // resolve com `{ ok: true }`, com ou sem usuário encontrado. Quando o
-  // usuário existe, gera um token opaco de 32 bytes, grava no Redis só o
-  // HASH (sha256) do token com TTL de 60 min, e envia o link (com o token em
-  // texto puro) por e-mail — o token puro nunca é persistido em lugar
-  // nenhum.
   async forgotPassword(email: string): Promise<{ ok: true }> {
     const normalizedEmail = (email ?? '').trim().toLowerCase();
     if (!normalizedEmail) return { ok: true };
@@ -478,8 +417,6 @@ export class AuthService {
       return { ok: true };
     }
 
-    // Legado WordPress que nunca logou ainda não tem conta em `users`; a
-    // redefinição conclui a migração dele com a senha nova.
     const [legacy] = await findLegacyByEmail(this.prisma, normalizedEmail, {
       pendingOnly: true,
     });
@@ -504,15 +441,11 @@ export class AuthService {
       .expire(pwdResetSubjectKey(subject), PWD_RESET_TTL_SECONDS)
       .exec();
 
-    // `new URL` absorve a barra final que o APP_URL pode ter no ambiente.
     const resetLink = new URL(
       '/redefinir-senha',
       this.config.get('APP_URL', { infer: true }),
     );
     resetLink.searchParams.set('token', token);
-    // Sem await: esperar o SMTP só quando a conta existe revelava, pelo tempo
-    // de resposta, quais e-mails estão cadastrados. Falhas de envio já são
-    // tratadas e logadas pelo MailService.
     void this.mailService.sendPasswordReset(email, resetLink.toString());
   }
 
@@ -535,11 +468,6 @@ export class AuthService {
     return { ok: true };
   }
 
-  // Doc 03 §10 / doc 05 §3.1. Uso único: a chave `pwdreset:{sha256(token)}`
-  // é consumida na leitura (mesmo que a redefinição falhe depois, o usuário
-  // pede outro link), os demais links pendentes do titular são invalidados e
-  // `revokeAll` derruba todas as sessões existentes do usuário (login forçado
-  // em qualquer dispositivo depois de uma troca de senha via recuperação).
   async resetPassword(token: string, password: string): Promise<{ ok: true }> {
     const normalizedPassword = (password ?? '').trim();
     if (normalizedPassword.length < MIN_PASSWORD_LENGTH) {
@@ -547,8 +475,6 @@ export class AuthService {
     }
     assertPasswordFitsBcrypt(normalizedPassword);
 
-    // GETDEL: com GET seguido de DEL, duas requisições simultâneas com o
-    // mesmo link passavam ambas.
     const subject = await this.redisService.client.getdel(
       pwdResetKey(sha256(token ?? '')),
     );
@@ -600,16 +526,12 @@ export class AuthService {
     plainPassword: string,
   ): Promise<string> {
     const passwordHash = await this.passwordService.hash(plainPassword);
-    // O token de recuperação prova posse do e-mail, então o legado pendente
-    // com o mesmo e-mail pode ser vinculado a esta conta.
     await this.legacyMigrationService.setPassword(userId, passwordHash, {
       claimLegacy: true,
     });
     return userId;
   }
 
-  // Entre o pedido e o uso do link o usuário pode ter logado com a senha do
-  // WordPress, o que já criou a conta; nesse caso só a senha muda.
   private async resetLegacyPassword(
     legacyId: bigint,
     plainPassword: string,
@@ -636,11 +558,6 @@ export class AuthService {
     return this.setNewPassword(existingUser.id, plainPassword);
   }
 
-  // Doc 03 §10 / doc 05 §3.1. Exige sessão (`claims` vem do cookie `mv_at`,
-  // lido pelo controller). Ao contrário de `resetPassword` (que derruba
-  // TODAS as sessões — o usuário não sabe a senha, então nenhum dispositivo
-  // é confiável), aqui a sessão atual (`claims.sid`) é preservada: o usuário
-  // provou conhecer a senha atual, então só as OUTRAS sessões são revogadas.
   async changePassword(
     claims: Claims | null,
     currentPassword: string,
@@ -668,8 +585,6 @@ export class AuthService {
     assertPasswordFitsBcrypt(normalizedNewPassword);
 
     const passwordHash = await this.passwordService.hash(normalizedNewPassword);
-    // Saber a senha desta conta não prova posse do e-mail: o legado pendente
-    // com o mesmo e-mail só pode ser assumido pela recuperação de senha.
     await this.legacyMigrationService.setPassword(
       (user as User).id,
       passwordHash,
@@ -682,9 +597,6 @@ export class AuthService {
     return { ok: true };
   }
 
-  // Rehash de senha legada gravada em `users.passwordHash` (import parcial —
-  // doc 03 §8). Falha de persistência não bloqueia o login, mas um hash
-  // alterado por outra operação invalida esta tentativa de autenticação.
   private async rehash(
     userId: string,
     plainPassword: string,
