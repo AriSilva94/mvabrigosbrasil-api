@@ -4,6 +4,9 @@ import { RedisService } from '../redis/redis.service';
 
 export type HealthStatus = {
   status: 'ok' | 'degraded';
+};
+
+export type HealthDetails = HealthStatus & {
   revision: string;
   db: 'up' | 'down';
   redis: 'up' | 'down';
@@ -36,7 +39,7 @@ export class HealthService {
     private readonly redis: RedisService,
   ) {}
 
-  async check(): Promise<HealthStatus> {
+  async check(): Promise<HealthDetails> {
     const db = await withTimeout(
       this.prisma.$queryRaw`SELECT 1`.then(() => undefined),
       PROBE_TIMEOUT_MS,

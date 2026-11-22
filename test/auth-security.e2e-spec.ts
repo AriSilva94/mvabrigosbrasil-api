@@ -283,7 +283,7 @@ describe('Auth security regressions (E2E)', () => {
   });
 
   describe('C3: nobody takes over a pending WordPress legacy account', () => {
-    it('register with the e-mail of a pending legacy account -> 409', async () => {
+    it('register with the e-mail of a pending legacy account answers like a new sign-up and creates nothing', async () => {
       const legacyId = 910_002n;
       const email = EMAIL('c3-legacy');
       await createLegacyWithShelter(legacyId, email.toUpperCase());
@@ -292,7 +292,7 @@ describe('Auth security regressions (E2E)', () => {
       await request(app.getHttpServer())
         .post('/api/v1/auth/register')
         .send({ email, password: PASSWORD })
-        .expect(409);
+        .expect(200);
 
       expect(await prisma.user.findUnique({ where: { email } })).toBeNull();
       expect(await legacyState(legacyId)).toEqual({

@@ -359,17 +359,25 @@ function makeClaims(overrides: Partial<Claims> = {}): Claims {
 
 describe('AuthService.register', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
-  let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
+  let passwordService: jest.Mocked<
+    Pick<PasswordService, 'hash' | 'burnVerification'>
+  >;
   let sessionService: jest.Mocked<Pick<SessionService, 'create'>>;
   let tokenService: jest.Mocked<Pick<TokenService, 'sign'>>;
   let prisma: { user: { findFirst: jest.Mock; create: jest.Mock } };
-  let emailVerification: { issue: jest.Mock };
+  let emailVerification: { issue: jest.Mock; resend: jest.Mock };
   let service: AuthService;
 
   beforeEach(() => {
-    emailVerification = { issue: jest.fn().mockResolvedValue(undefined) };
+    emailVerification = {
+      issue: jest.fn().mockResolvedValue(undefined),
+      resend: jest.fn().mockResolvedValue(undefined),
+    };
     usersService = { findByEmail: jest.fn().mockResolvedValue(null) };
-    passwordService = { hash: jest.fn().mockResolvedValue('hashed-pw') };
+    passwordService = {
+      hash: jest.fn().mockResolvedValue('hashed-pw'),
+      burnVerification: jest.fn().mockResolvedValue(undefined),
+    };
     sessionService = {
       create: jest.fn().mockResolvedValue({ sid: 'sid-1', rt: 'rt-1' }),
     };
@@ -422,21 +430,60 @@ describe('AuthService.register', () => {
     });
   });
 
-  it('409 when e-mail already exists (case-insensitive)', async () => {
+  it('answers like a new sign-up and sends a reset link when the verified e-mail exists (case-insensitive)', async () => {
+    usersService.findByEmail.mockResolvedValue({
+      id: 'existing',
+      emailVerified: true,
+    } as unknown as User);
+    const forgot = jest
+      .spyOn(service, 'forgotPassword')
+      .mockResolvedValue({ ok: true });
+
+    const result = await service.register(
+      { email: 'JOAO@Example.com', password: 'secretpw' },
+      null,
+    );
+
+    expect(result).toMatchObject({
+      teamOnly: false,
+      verificationRequired: true,
+    });
+    expect(result.userId).not.toBe('existing');
+    expect(usersService.findByEmail).toHaveBeenCalledWith('joao@example.com');
+    expect(forgot).toHaveBeenCalledWith('joao@example.com');
+    expect(passwordService.burnVerification).toHaveBeenCalled();
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('resends the verification link when the existing e-mail is unverified', async () => {
+    usersService.findByEmail.mockResolvedValue({
+      id: 'existing',
+      emailVerified: false,
+    } as unknown as User);
+
+    await service.register(
+      { email: 'joao@example.com', password: 'secretpw' },
+      null,
+    );
+
+    expect(emailVerification.resend).toHaveBeenCalledWith('joao@example.com');
+    expect(prisma.user.create).not.toHaveBeenCalled();
+  });
+
+  it('409 when a team access is created for an e-mail that already exists', async () => {
     usersService.findByEmail.mockResolvedValue({
       id: 'existing',
     } as unknown as User);
 
     await expect(
       service.register(
-        { email: 'JOAO@Example.com', password: 'secretpw' },
-        null,
+        { email: 'joao@example.com', password: 'secretpw', teamOnly: true },
+        { role: 'abrigo', isTeamOnly: false, teamDisabled: false } as never,
       ),
     ).rejects.toMatchObject({
       status: 409,
       response: { error: 'E-mail já cadastrado.' },
     });
-    expect(usersService.findByEmail).toHaveBeenCalledWith('joao@example.com');
   });
 
   it('401 when teamOnly=true and no session', async () => {
@@ -534,18 +581,19 @@ describe('AuthService.register', () => {
     });
   });
 
-  it('409 when the e-mail belongs to a WordPress legacy account', async () => {
+  it('answers like a new sign-up when the e-mail belongs to a WordPress legacy account', async () => {
     findLegacyByEmailMock.mockResolvedValue([makeLegacy()]);
+    const forgot = jest
+      .spyOn(service, 'forgotPassword')
+      .mockResolvedValue({ ok: true });
 
-    await expect(
-      service.register(
-        { email: 'joao@example.com', password: 'secretpw' },
-        null,
-      ),
-    ).rejects.toMatchObject({
-      status: 409,
-      response: { error: 'E-mail já cadastrado.' },
-    });
+    const result = await service.register(
+      { email: 'joao@example.com', password: 'secretpw' },
+      null,
+    );
+
+    expect(result.verificationRequired).toBe(true);
+    expect(forgot).toHaveBeenCalledWith('joao@example.com');
     expect(prisma.user.create).not.toHaveBeenCalled();
   });
 
