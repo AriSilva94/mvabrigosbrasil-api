@@ -24,7 +24,6 @@ function tokenKey(tokenHash: string): string {
   return `emailverify:${tokenHash}`;
 }
 
-// Hash do link vigente de cada usuário, para um novo envio invalidar o anterior.
 function userKey(userId: string): string {
   return `emailverify_user:${userId}`;
 }
@@ -69,7 +68,6 @@ export class EmailVerificationService {
     void this.mailService.sendEmailVerification(email, link.toString());
   }
 
-  // Exige a senha do cadastro: o link sozinho não pode ativar conta criada por terceiros.
   async confirm(token: string, password: string): Promise<ConfirmResult> {
     const key = tokenKey(sha256(token ?? ''));
     const userId = await this.redisService.client.get(key);
@@ -86,7 +84,6 @@ export class EmailVerificationService {
       (await this.passwordService.verify(plain, user.passwordHash)).valid;
     if (!passwordOk) return 'wrong_password';
 
-    // GETDEL: duas requisições simultâneas com o mesmo link não passam as duas.
     if (!(await this.redisService.client.getdel(key))) return 'invalid';
 
     const { count } = await this.prisma.user.updateMany({

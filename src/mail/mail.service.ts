@@ -10,7 +10,6 @@ import { passwordChangedEmail } from './password-changed.template';
 
 export const RESEND_CLIENT = 'RESEND_CLIENT';
 
-// Recorte do SDK usado aqui; ele devolve `error` em vez de lançar.
 export interface ResendLike {
   emails: {
     send(payload: {
@@ -34,7 +33,6 @@ const PASSWORD_RESET_VALIDITY_MINUTES = 60;
 const EMAIL_VERIFICATION_VALIDITY_HOURS = 24;
 
 const DEFAULT_DAILY_LIMIT = 100;
-// Fração da cota para cadastro e avisos; o resto fica reservado ao reset de senha.
 const STANDARD_SHARE = 0.7;
 const QUOTA_KEY_TTL_SECONDS = 2 * 24 * 60 * 60;
 
@@ -111,7 +109,6 @@ export class MailService {
     await this.deliver(email, content, 'senha alterada', 'standard');
   }
 
-  // A cota do Resend é da conta toda: o teto local impede que abuso do cadastro bloqueie o reset.
   private async reserveQuota(priority: MailPriority): Promise<boolean> {
     if (!this.redisService) return true;
 
@@ -138,7 +135,6 @@ export class MailService {
     }
   }
 
-  // Em produção sem chave só avisa: o token nunca é logado.
   private logWithoutClient(kind: string, email: string, link: string): void {
     if (process.env.NODE_ENV !== 'production') {
       this.logger.log(
@@ -151,7 +147,6 @@ export class MailService {
     );
   }
 
-  // Nunca lança: falha de envio não pode derrubar o fluxo de quem chamou.
   private async deliver(
     to: string,
     content: EmailContent,

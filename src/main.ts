@@ -10,7 +10,6 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import type { Env } from './config/env.validation';
 
 async function bootstrap(): Promise<void> {
-  // rawBody: o webhook do Resend valida a assinatura sobre o corpo original.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });

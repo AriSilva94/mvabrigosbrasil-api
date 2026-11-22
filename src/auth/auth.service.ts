@@ -221,7 +221,6 @@ export class AuthService {
       throw new UnauthorizedException({ error: INVALID_CREDENTIALS });
     }
 
-    // Só depois de a senha conferir: senão o 403 revela que o e-mail tem conta.
     if (!authenticatedUser.emailVerified) {
       throw new ForbiddenException({
         error: EMAIL_NOT_VERIFIED,
@@ -511,7 +510,7 @@ export class AuthService {
       this.config.get('APP_URL', { infer: true }),
     );
     resetLink.searchParams.set('token', token);
-    // Sem await: esperar o envio só quando a conta existe revelava, pelo tempo
+    // Sem await: esperar o SMTP só quando a conta existe revelava, pelo tempo
     // de resposta, quais e-mails estão cadastrados. Falhas de envio já são
     // tratadas e logadas pelo MailService.
     void this.mailService.sendPasswordReset(email, resetLink.toString());

@@ -102,7 +102,6 @@ export class LegacyMigrationService {
         where: { id: userId },
         data: {
           passwordHash,
-          // O link de recuperação prova posse do e-mail.
           ...(options.claimLegacy && { emailVerified: true }),
           ...(pending.length > 0 && {
             wpUserId: user.wpUserId ?? Number(pending[0].id),

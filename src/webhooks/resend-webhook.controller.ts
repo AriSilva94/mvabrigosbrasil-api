@@ -74,7 +74,6 @@ export class ResendWebhookController {
     }
 
     if (ATTENTION_EVENTS.has(event.type)) {
-      // Só o id: o e-mail do destinatário é dado pessoal.
       const emailId =
         'email_id' in event.data ? String(event.data.email_id) : 'desconhecido';
       this.logger.warn(`Resend ${event.type} (email_id=${emailId})`);

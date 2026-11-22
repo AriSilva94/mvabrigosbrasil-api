@@ -106,7 +106,6 @@ export function mapAuthUserToUser(row: AuthUserRow): UserInsert {
     id: row.id,
     email: row.email.trim().toLowerCase(),
     passwordHash: row.encrypted_password ?? null,
-    // Conta importada é anterior à verificação de e-mail do NestJS.
     emailVerified: true,
     fullName: row.full_name ?? null,
     phone: row.phone ?? null,
