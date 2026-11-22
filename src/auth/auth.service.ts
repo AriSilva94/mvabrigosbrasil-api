@@ -1,4 +1,4 @@
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, randomUUID, createHash } from 'crypto';
 import {
   BadRequestException,
   ConflictException,
@@ -278,7 +278,12 @@ export class AuthService {
       findLegacyByEmail(this.prisma, normalizedEmail),
     ]);
     if (existing || legacy) {
-      throw new ConflictException({ error: 'E-mail já cadastrado.' });
+      // Quem cria acesso de equipe já está autenticado; para o cadastro público
+      // a resposta não pode distinguir e-mail novo de existente.
+      if (teamOnly) {
+        throw new ConflictException({ error: 'E-mail já cadastrado.' });
+      }
+      return this.registerForExistingEmail(normalizedEmail, existing);
     }
 
     const role = teamOnly
@@ -312,6 +317,24 @@ export class AuthService {
 
     return {
       userId: created.id,
+      teamOnly: false,
+      verificationRequired: true,
+    };
+  }
+
+  private async registerForExistingEmail(
+    email: string,
+    existing: User | null,
+  ): Promise<RegisterResult> {
+    // Iguala o tempo do hash de senha do cadastro novo.
+    await this.passwordService.burnVerification(email);
+    if (existing && !existing.emailVerified) {
+      await this.emailVerificationService.resend(email);
+    } else {
+      await this.forgotPassword(email);
+    }
+    return {
+      userId: randomUUID(),
       teamOnly: false,
       verificationRequired: true,
     };
