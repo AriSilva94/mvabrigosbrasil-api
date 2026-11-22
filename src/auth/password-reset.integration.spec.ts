@@ -43,7 +43,10 @@ describe('AuthService password reset (integration, real Redis)', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findByEmail'>>;
   let passwordService: jest.Mocked<Pick<PasswordService, 'hash'>>;
   let sessionService: jest.Mocked<Pick<SessionService, 'revokeAll'>>;
-  let mailService: jest.Mocked<Pick<MailService, 'sendPasswordReset'>>;
+  let mailService: jest.Mocked<
+    Pick<MailService, 'sendPasswordReset' | 'sendPasswordChanged'>
+  >;
+  let prisma: { user: { findUnique: jest.Mock } };
   let legacyMigrationService: { setPassword: jest.Mock };
   let config: { get: jest.Mock };
   let service: AuthService;
@@ -71,7 +74,15 @@ describe('AuthService password reset (integration, real Redis)', () => {
     usersService = { findByEmail: jest.fn() };
     passwordService = { hash: jest.fn().mockResolvedValue('new-bcrypt-hash') };
     sessionService = { revokeAll: jest.fn().mockResolvedValue(undefined) };
-    mailService = { sendPasswordReset: jest.fn().mockResolvedValue(undefined) };
+    mailService = {
+      sendPasswordReset: jest.fn().mockResolvedValue(undefined),
+      sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
+    };
+    prisma = {
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ email: 'joao@example.com' }),
+      },
+    };
     legacyMigrationService = {
       setPassword: jest.fn().mockResolvedValue(undefined),
     };
@@ -83,7 +94,7 @@ describe('AuthService password reset (integration, real Redis)', () => {
       legacyMigrationService as unknown as LegacyMigrationService,
       sessionService as unknown as SessionService,
       {} as unknown as TokenService,
-      {} as unknown as PrismaService,
+      prisma as unknown as PrismaService,
       redis,
       mailService as unknown as MailService,
       config as unknown as ConfigService<Env, true>,
@@ -125,6 +136,9 @@ describe('AuthService password reset (integration, real Redis)', () => {
       { claimLegacy: true },
     );
     expect(sessionService.revokeAll).toHaveBeenCalledWith('user-1');
+    expect(mailService.sendPasswordChanged).toHaveBeenCalledWith(
+      'joao@example.com',
+    );
 
     const key = `pwdreset:${sha256(token)}`;
     expect(await redis.client.get(key)).toBeNull();
